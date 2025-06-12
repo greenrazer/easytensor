@@ -24,6 +24,22 @@ impl TensorShape {
             })
             .sum()
     }
+
+    fn unravel_index(&self, index: usize) -> Vec<usize> {
+        if self.shape.is_empty() {
+            return vec![];
+        }
+
+        let mut indices = vec![0; self.shape.len()];
+        let mut remaining_index = index;
+
+        for (i, &dim_size) in self.shape.iter().enumerate().rev() {
+            indices[i] = remaining_index % dim_size;
+            remaining_index /= dim_size;
+        }
+
+        indices
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +157,83 @@ mod tests {
                 assert_eq!(shape.ravel_index(&[i, j]), expected[index]);
                 index += 1;
             }
+        }
+    }
+
+    #[test]
+    fn test_unravel_index() {
+        let shape = TensorShape { shape: vec![5] };
+        
+        assert_eq!(shape.unravel_index(0), vec![0]);
+        assert_eq!(shape.unravel_index(1), vec![1]);
+        assert_eq!(shape.unravel_index(2), vec![2]);
+        assert_eq!(shape.unravel_index(3), vec![3]);
+        assert_eq!(shape.unravel_index(4), vec![4]);
+
+        let shape = TensorShape { shape: vec![2, 3] };
+        
+        assert_eq!(shape.unravel_index(0), vec![0, 0]);
+        assert_eq!(shape.unravel_index(1), vec![0, 1]);
+        assert_eq!(shape.unravel_index(2), vec![0, 2]);
+        assert_eq!(shape.unravel_index(3), vec![1, 0]);
+        assert_eq!(shape.unravel_index(4), vec![1, 1]);
+        assert_eq!(shape.unravel_index(5), vec![1, 2]);
+
+        let shape = TensorShape { shape: vec![2, 3, 4] };
+        
+        assert_eq!(shape.unravel_index(0), vec![0, 0, 0]);
+        assert_eq!(shape.unravel_index(1), vec![0, 0, 1]);
+        assert_eq!(shape.unravel_index(2), vec![0, 0, 2]);
+        assert_eq!(shape.unravel_index(3), vec![0, 0, 3]);
+        assert_eq!(shape.unravel_index(4), vec![0, 1, 0]);
+        assert_eq!(shape.unravel_index(5), vec![0, 1, 1]);
+        assert_eq!(shape.unravel_index(11), vec![0, 2, 3]);
+        assert_eq!(shape.unravel_index(12), vec![1, 0, 0]);
+        assert_eq!(shape.unravel_index(17), vec![1, 1, 1]);
+        assert_eq!(shape.unravel_index(23), vec![1, 2, 3]);
+
+        let shape = TensorShape { shape: vec![2, 2, 2, 2] };
+
+        assert_eq!(shape.unravel_index(0), vec![0, 0, 0, 0]);
+        assert_eq!(shape.unravel_index(1), vec![0, 0, 0, 1]);
+        assert_eq!(shape.unravel_index(2), vec![0, 0, 1, 0]);
+        assert_eq!(shape.unravel_index(3), vec![0, 0, 1, 1]);
+        assert_eq!(shape.unravel_index(4), vec![0, 1, 0, 0]);
+        assert_eq!(shape.unravel_index(8), vec![1, 0, 0, 0]);
+        assert_eq!(shape.unravel_index(15), vec![1, 1, 1, 1]);
+
+        let shape = TensorShape { shape: vec![10, 20, 30] };
+        
+        assert_eq!(shape.unravel_index(0), vec![0, 0, 0]);
+        assert_eq!(shape.unravel_index(1), vec![0, 0, 1]);
+        assert_eq!(shape.unravel_index(30), vec![0, 1, 0]);
+        assert_eq!(shape.unravel_index(600), vec![1, 0, 0]);
+        assert_eq!(shape.unravel_index(5 * 600 + 10 * 30 + 15), vec![5, 10, 15]);
+        assert_eq!(shape.unravel_index(9 * 600 + 19 * 30 + 29), vec![9, 19, 29]);
+
+        let shape = TensorShape { shape: vec![1, 1, 1] };
+        assert_eq!(shape.unravel_index(0), vec![0, 0, 0]);
+
+        let shape = TensorShape { shape: vec![] };
+        assert_eq!(shape.unravel_index(0), vec![]);
+
+        let shape = TensorShape { shape: vec![3, 4] };
+        
+        let expected_indices = [
+            vec![0, 0], vec![0, 1], vec![0, 2], vec![0, 3],
+            vec![1, 0], vec![1, 1], vec![1, 2], vec![1, 3],
+            vec![2, 0], vec![2, 1], vec![2, 2], vec![2, 3]
+        ];
+        
+        for (flat_index, expected_multi_index) in expected_indices.iter().enumerate() {
+            assert_eq!(shape.unravel_index(flat_index), *expected_multi_index);
+        }
+
+        let shape = TensorShape { shape: vec![4, 5, 6] };
+        for flat_index in 0..(4 * 5 * 6) {
+            let multi_index = shape.unravel_index(flat_index);
+            let recovered_flat_index = shape.ravel_index(&multi_index);
+            assert_eq!(flat_index, recovered_flat_index);
         }
     }
 }
