@@ -101,10 +101,6 @@ impl<T> IndexMut<&[usize]> for Tensor<T> {
     }
 }
 
-fn main() {
-    let tensor = Tensor::<f32>::zeros(vec![2, 3]);
-    println!("{:?}", tensor);
-}
 
 #[cfg(test)]
 mod tests {
