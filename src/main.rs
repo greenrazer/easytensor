@@ -5,6 +5,12 @@ struct TensorShape {
     shape: Vec<usize>,
 }
 
+impl TensorShape {
+    fn size(&self) -> usize {
+        self.shape.iter().product()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct TensorStorage<T> {
     data: Vec<T>,
@@ -16,21 +22,18 @@ struct Tensor<T> {
     storage: TensorStorage<T>,
 }
 
-impl TensorShape {
-    fn size(&self) -> usize {
-        self.shape.iter().product()
+impl<T: Zero + Clone> Tensor<T> {
+    fn zeros(shape: Vec<usize>) -> Self {
+        let shape = TensorShape { shape };
+        let storage = TensorStorage::<T>::zeros(&shape);
+        Tensor { shape, storage }
     }
 }
 
-impl<T: Zero + Clone> Tensor<T> {
-    fn zeros(shape: Vec<usize>) -> Self {
-        let ts = TensorShape { shape };
-        let size = ts.size();
-        Tensor {
-            shape: ts,
-            storage: TensorStorage {
-                data: vec![T::zero(); size],
-            },
+impl<T: Zero + Clone> TensorStorage<T> {
+    fn zeros(shape: &TensorShape) -> Self {
+        TensorStorage {
+            data: vec![T::zero(); shape.size()],
         }
     }
 }
@@ -49,10 +52,9 @@ mod tests {
         let tensor = Tensor::<f32>::zeros(vec![2, 3]);
 
         assert_eq!(tensor.shape.shape, vec![2, 3]);
-        
+
         assert_eq!(tensor.storage.data.len(), 6);
-        
+
         assert!(tensor.storage.data.iter().all(|&x| x == 0.0));
     }
-
 }
