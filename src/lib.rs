@@ -1,6 +1,6 @@
 use std::{
+    collections::HashMap,
     ops::{Index, IndexMut, RangeInclusive},
-    slice,
 };
 
 use num_traits::Zero;
@@ -80,7 +80,7 @@ impl TensorShape {
         let mut shape = Vec::with_capacity(final_num_dimensions);
         let mut strides = Vec::with_capacity(final_num_dimensions);
         let mut current_pos = 0;
-        
+
         for range in sorted_dim_ranges {
             // Add dimensions before this range
             shape.extend_from_slice(&self.shape[current_pos..*range.start()]);
@@ -98,6 +98,82 @@ impl TensorShape {
         // Add remaining dimensions after the last range
         shape.extend_from_slice(&self.shape[current_pos..]);
         strides.extend_from_slice(&self.strides[current_pos..]);
+
+        Self { shape, strides }
+    }
+
+    fn split(&self, splits: &HashMap<usize, Vec<usize>>) -> Self {
+        if splits.is_empty() {
+            return self.clone();
+        }
+
+        // Collect and sort dimension indices to process them in order
+        let mut sorted_dims: Vec<_> = splits.keys().cloned().collect();
+        sorted_dims.sort();
+
+        let mut shape = Vec::new();
+        let mut strides = Vec::new();
+        let mut current_dim = 0;
+
+        for &split_dim in &sorted_dims {
+            // Add dimensions before this split
+            shape.extend_from_slice(&self.shape[current_dim..split_dim]);
+            strides.extend_from_slice(&self.strides[current_dim..split_dim]);
+
+            // Process the split for this dimension
+            let split_sizes = &splits[&split_dim];
+            let original_size = self.shape[split_dim];
+            let original_stride = self.strides[split_dim];
+
+            // Calculate the product of non-zero sizes and count zeros
+            let mut non_zero_product = 1usize;
+            let mut zero_index = None;
+
+            for (i, &size) in split_sizes.iter().enumerate() {
+                if size == 0 {
+                    if zero_index.is_some() {
+                        panic!("Cannot have more than one wildcard (0) in split sizes");
+                    }
+                    zero_index = Some(i);
+                } else {
+                    non_zero_product = non_zero_product * size;
+                }
+            }
+
+            // Create the new sizes, inferring wildcards
+            let mut final_sizes = split_sizes.clone();
+            if let Some(zero_index) = zero_index {
+                if original_size % non_zero_product != 0 {
+                    panic!(
+                        "Cannot split dimension of size {} into sizes {:?} - not evenly divisible",
+                        original_size, split_sizes
+                    );
+                }
+                let inferred_size = original_size / non_zero_product;
+                final_sizes[zero_index] = inferred_size;
+            }
+
+            // Calculate strides for the split dimensions
+            // The stride decreases as we go through the split dimensions
+            let mut current_stride = original_stride;
+            for &size in final_sizes.iter().rev() {
+                strides.push(current_stride);
+                current_stride = current_stride * size;
+            }
+
+            // Reverse the strides we just added to maintain correct order
+            let start_idx = strides.len() - final_sizes.len();
+            strides[start_idx..].reverse();
+
+            // Add the split dimensions to shape
+            shape.extend_from_slice(&final_sizes);
+
+            current_dim = split_dim + 1;
+        }
+
+        // Add remaining dimensions after the last split
+        shape.extend_from_slice(&self.shape[current_dim..]);
+        strides.extend_from_slice(&self.strides[current_dim..]);
 
         Self { shape, strides }
     }
@@ -617,5 +693,117 @@ mod tests {
         let merged_shape = shape.merge(&[1..=3, 5..=6]);
         assert_eq!(merged_shape.shape, vec![2, 60, 6, 56]); // [2, 3*4*5, 6, 7*8] = [2, 60, 6, 56]
         assert_eq!(merged_shape.strides, vec![20160, 336, 56, 1]);
+    }
+
+    #[test]
+    fn test_split() {
+        // Test basic split without wildcards
+        let shape = TensorShape::new(vec![2, 12, 5]);
+        let mut splits = HashMap::new();
+        splits.insert(1, vec![3, 4]); // Split dimension 1 (size 12) into [3, 4]
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![2, 3, 4, 5]);
+        assert_eq!(split_shape.strides, vec![60, 20, 5, 1]);
+
+        // Test split with wildcard (zero)
+        let shape = TensorShape::new(vec![24]);
+        let mut splits = HashMap::new();
+        splits.insert(0, vec![2, 3, 0]); // Split dimension 0 (size 24) into [2, 3, ?] where ? = 24/(2*3) = 4
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![2, 3, 4]);
+        assert_eq!(split_shape.strides, vec![12, 4, 1]);
+
+        // Test multiple splits
+        let shape = TensorShape::new(vec![6, 20, 7]);
+        let mut splits = HashMap::new();
+        splits.insert(0, vec![2, 3]); // Split dimension 0 (size 6) into [2, 3]
+        splits.insert(1, vec![4, 5]); // Split dimension 1 (size 20) into [4, 5]
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![2, 3, 4, 5, 7]);
+        assert_eq!(split_shape.strides, vec![420, 140, 35, 7, 1]);
+
+        // Test split with wildcard in middle
+        let shape = TensorShape::new(vec![2, 60, 3]);
+        let mut splits = HashMap::new();
+        splits.insert(1, vec![4, 0, 5]); // Split dimension 1 (size 60) into [4, ?, 5] where ? = 60/(4*5) = 3
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![2, 4, 3, 5, 3]);
+        assert_eq!(split_shape.strides, vec![180, 45, 15, 3, 1]);
+
+        // Test split at the end
+        let shape = TensorShape::new(vec![2, 3, 24]);
+        let mut splits = HashMap::new();
+        splits.insert(2, vec![4, 6]); // Split last dimension (size 24) into [4, 6]
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![2, 3, 4, 6]);
+        assert_eq!(split_shape.strides, vec![72, 24, 6, 1]);
+
+        // Test split at the beginning
+        let shape = TensorShape::new(vec![12, 3, 4]);
+        let mut splits = HashMap::new();
+        splits.insert(0, vec![3, 4]); // Split first dimension (size 12) into [3, 4]
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![3, 4, 3, 4]);
+        assert_eq!(split_shape.strides, vec![48, 12, 4, 1]);
+
+        // Test no splits (empty HashMap)
+        let shape = TensorShape::new(vec![2, 3, 4]);
+        let split_shape = shape.split(&HashMap::new());
+        assert_eq!(split_shape.shape, vec![2, 3, 4]);
+        assert_eq!(split_shape.strides, vec![12, 4, 1]);
+
+        // Test single dimension split
+        let shape = TensorShape::new(vec![30]);
+        let mut splits = HashMap::new();
+        splits.insert(0, vec![5, 6]);
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![5, 6]);
+        assert_eq!(split_shape.strides, vec![6, 1]);
+
+        // Test complex split with multiple wildcards in different dimensions
+        let shape = TensorShape::new(vec![2, 60, 3, 40]);
+        let mut splits = HashMap::new();
+        splits.insert(1, vec![0, 5]); // Split dimension 1 (size 60) into [?, 5] where ? = 12
+        splits.insert(3, vec![8, 0]); // Split dimension 3 (size 40) into [8, ?] where ? = 5
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![2, 12, 5, 3, 8, 5]);
+        assert_eq!(split_shape.strides, vec![7200, 600, 120, 40, 5, 1]);
+
+        // Test that index mapping is preserved after splitting
+        let original_shape = TensorShape::new(vec![6, 8]);
+        let mut splits = HashMap::new();
+        splits.insert(0, vec![2, 3]); // Split first dimension 6 into [2, 3]
+        splits.insert(1, vec![4, 2]); // Split second dimension 8 into [4, 2]
+        let split_shape = original_shape.split(&splits);
+
+        // Verify some key mappings: [i, j] in original -> [i/3, i%3, j/2, j%2] in split
+        assert_eq!(
+            original_shape.ravel_index(&[0, 0]),
+            split_shape.ravel_index(&[0, 0, 0, 0])
+        );
+        assert_eq!(
+            original_shape.ravel_index(&[2, 6]),
+            split_shape.ravel_index(&[0, 2, 3, 0])
+        ); // i=2 -> [0, 2], j=6 -> [3, 0]
+        assert_eq!(
+            original_shape.ravel_index(&[5, 7]),
+            split_shape.ravel_index(&[1, 2, 3, 1])
+        ); // i=5 -> [1, 2], j=7 -> [3, 1]
+
+        // Test edge case: split into single elements
+        let shape = TensorShape::new(vec![4]);
+        let mut splits = HashMap::new();
+        splits.insert(0, vec![4, 1]);
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![4, 1]);
+        assert_eq!(split_shape.strides, vec![1, 1]);
+
+        // Test split that results in same total size
+        let shape = TensorShape::new(vec![2, 3, 4]);
+        let mut splits = HashMap::new();
+        splits.insert(1, vec![1, 3]); // Split dimension 1 (size 3) into [1, 3]
+        let split_shape = shape.split(&splits);
+        assert_eq!(split_shape.shape, vec![2, 1, 3, 4]);
+        assert_eq!(split_shape.strides, vec![12, 12, 4, 1]);
     }
 }
