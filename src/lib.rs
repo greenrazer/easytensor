@@ -1,4 +1,7 @@
-use std::ops::{Index, IndexMut};
+use std::{
+    ops::{Index, IndexMut, RangeInclusive},
+    slice,
+};
 
 use num_traits::Zero;
 
@@ -49,9 +52,54 @@ impl TensorShape {
         indices
     }
 
-    fn permute_dimensions(&mut self, permuted_indices: &[usize]) {
-        self.shape = permuted_indices.iter().map(|&i| self.shape[i]).collect();
-        self.strides = permuted_indices.iter().map(|&i| self.strides[i]).collect();
+    fn permute(&self, permuted_indices: &[usize]) -> Self {
+        let shape = permuted_indices.iter().map(|&i| self.shape[i]).collect();
+        let strides = permuted_indices.iter().map(|&i| self.strides[i]).collect();
+        Self { shape, strides }
+    }
+
+    fn merge(&self, dim_ranges: &[RangeInclusive<usize>]) -> Self {
+        // Sort ranges by start index
+        let mut sorted_dim_ranges: Vec<_> = dim_ranges.iter().collect();
+        sorted_dim_ranges.sort_by_key(|r| r.start());
+
+        // Check that the ranges don't overlap
+        if !sorted_dim_ranges
+            .windows(2)
+            .all(|w| w[0].end() < w[1].start())
+        {
+            panic!("Ranges must not overlap");
+        }
+
+        // Compute the final number of dimensions
+        let mut final_num_dimensions = self.shape.len();
+        for range in sorted_dim_ranges.iter() {
+            final_num_dimensions -= range.end() - range.start();
+        }
+
+        let mut shape = Vec::with_capacity(final_num_dimensions);
+        let mut strides = Vec::with_capacity(final_num_dimensions);
+        let mut current_pos = 0;
+        
+        for range in sorted_dim_ranges {
+            // Add dimensions before this range
+            shape.extend_from_slice(&self.shape[current_pos..*range.start()]);
+            strides.extend_from_slice(&self.strides[current_pos..*range.start()]);
+
+            // Calculate merged dimension size
+            let merged_size: usize = self.shape[range.clone()].iter().product();
+            shape.push(merged_size);
+            let stride_size: usize = self.strides[range.end().clone()];
+            strides.push(stride_size);
+
+            current_pos = range.end() + 1;
+        }
+
+        // Add remaining dimensions after the last range
+        shape.extend_from_slice(&self.shape[current_pos..]);
+        strides.extend_from_slice(&self.strides[current_pos..]);
+
+        Self { shape, strides }
     }
 }
 
@@ -413,59 +461,58 @@ mod tests {
     }
 
     #[test]
-    fn test_permute_dimensions() {
+    fn test_permute() {
         // Test 2D permutation (transpose)
-        let mut shape_2d = TensorShape::new(vec![3, 4]);
+        let shape_2d = TensorShape::new(vec![3, 4]);
         assert_eq!(shape_2d.shape, vec![3, 4]);
         assert_eq!(shape_2d.strides, vec![4, 1]);
-        
-        shape_2d.permute_dimensions(&[1, 0]); // transpose
+
+        let shape_2d = shape_2d.permute(&[1, 0]); // transpose
         assert_eq!(shape_2d.shape, vec![4, 3]);
         assert_eq!(shape_2d.strides, vec![1, 4]);
-        
+
         // Test 3D permutation
-        let mut shape_3d = TensorShape::new(vec![2, 3, 4]);
+        let shape_3d = TensorShape::new(vec![2, 3, 4]);
         assert_eq!(shape_3d.shape, vec![2, 3, 4]);
         assert_eq!(shape_3d.strides, vec![12, 4, 1]);
-        
+
         // Permute to [2, 0, 1] - move last dimension to front
-        shape_3d.permute_dimensions(&[2, 0, 1]);
+        let shape_3d = shape_3d.permute(&[2, 0, 1]);
         assert_eq!(shape_3d.shape, vec![4, 2, 3]);
         assert_eq!(shape_3d.strides, vec![1, 12, 4]);
-        
+
         // Test 4D permutation
-        let mut shape_4d = TensorShape::new(vec![2, 3, 4, 5]);
+        let shape_4d = TensorShape::new(vec![2, 3, 4, 5]);
         assert_eq!(shape_4d.shape, vec![2, 3, 4, 5]);
         assert_eq!(shape_4d.strides, vec![60, 20, 5, 1]);
-        
+
         // Reverse the dimensions
-        shape_4d.permute_dimensions(&[3, 2, 1, 0]);
+        let shape_4d = shape_4d.permute(&[3, 2, 1, 0]);
         assert_eq!(shape_4d.shape, vec![5, 4, 3, 2]);
         assert_eq!(shape_4d.strides, vec![1, 5, 20, 60]);
-        
+
         // Test identity permutation (no change)
-        let mut shape_identity = TensorShape::new(vec![2, 3, 4]);
+        let shape_identity = TensorShape::new(vec![2, 3, 4]);
         let original_shape = shape_identity.shape.clone();
         let original_strides = shape_identity.strides.clone();
-        
-        shape_identity.permute_dimensions(&[0, 1, 2]);
+
+        let shape_identity = shape_identity.permute(&[0, 1, 2]);
         assert_eq!(shape_identity.shape, original_shape);
         assert_eq!(shape_identity.strides, original_strides);
-        
+
         // Test with single dimension
-        let mut shape_1d = TensorShape::new(vec![10]);
+        let shape_1d = TensorShape::new(vec![10]);
         assert_eq!(shape_1d.shape, vec![10]);
         assert_eq!(shape_1d.strides, vec![1]);
-        
-        shape_1d.permute_dimensions(&[0]);
+
+        let shape_1d = shape_1d.permute(&[0]);
         assert_eq!(shape_1d.shape, vec![10]);
         assert_eq!(shape_1d.strides, vec![1]);
-        
+
         // Test permutation preserves index mapping
         let original_shape = TensorShape::new(vec![2, 3, 4]);
-        let mut permuted_shape = original_shape.clone();
-        permuted_shape.permute_dimensions(&[1, 2, 0]); // [3, 4, 2]
-        
+        let permuted_shape = original_shape.permute(&[1, 2, 0]);
+
         // Verify that the same multi-dimensional indices map correctly
         // Original: [i, j, k] -> permuted: [j, k, i]
         for i in 0..2 {
@@ -481,11 +528,94 @@ mod tests {
                 }
             }
         }
-        
+
         // Test empty shape
-        let mut empty_shape = TensorShape::new(vec![]);
-        empty_shape.permute_dimensions(&[]);
+        let empty_shape = TensorShape::new(vec![]).permute(&[]);
         assert_eq!(empty_shape.shape, vec![]);
         assert_eq!(empty_shape.strides, vec![]);
+    }
+
+    #[test]
+    fn test_merge() {
+        // Test single range merge in the middle
+        let shape = TensorShape::new(vec![2, 3, 4, 5]);
+        assert_eq!(shape.shape, vec![2, 3, 4, 5]);
+        assert_eq!(shape.strides, vec![60, 20, 5, 1]);
+
+        let merged_shape = shape.merge(&[1..=2]);
+        assert_eq!(merged_shape.shape, vec![2, 12, 5]); // 3 * 4 = 12
+        assert_eq!(merged_shape.strides, vec![60, 5, 1]);
+
+        // Test merge at the beginning
+        let shape = TensorShape::new(vec![2, 3, 4]);
+        let merged_shape = shape.merge(&[0..=1]);
+        assert_eq!(merged_shape.shape, vec![6, 4]); // 2 * 3 = 6
+        assert_eq!(merged_shape.strides, vec![4, 1]);
+
+        // Test merge at the end
+        let shape = TensorShape::new(vec![2, 3, 4]);
+        let merged_shape = shape.merge(&[1..=2]);
+        assert_eq!(merged_shape.shape, vec![2, 12]); // 3 * 4 = 12
+        assert_eq!(merged_shape.strides, vec![12, 1]);
+
+        // Test merging entire tensor to single dimension
+        let shape = TensorShape::new(vec![2, 3, 4]);
+        let merged_shape = shape.merge(&[0..=2]);
+        assert_eq!(merged_shape.shape, vec![24]); // 2 * 3 * 4 = 24
+        assert_eq!(merged_shape.strides, vec![1]);
+
+        // Test multiple non-overlapping ranges
+        let shape = TensorShape::new(vec![2, 3, 4, 5, 6]);
+        let merged_shape = shape.merge(&[0..=1, 3..=4]);
+        assert_eq!(merged_shape.shape, vec![6, 4, 30]); // [2*3, 4, 5*6] = [6, 4, 30]
+        assert_eq!(merged_shape.strides, vec![120, 30, 1]);
+
+        // Test single dimension ranges (no actual merging)
+        let shape = TensorShape::new(vec![2, 3, 4, 5]);
+        let merged_shape = shape.merge(&[1..=1, 3..=3]);
+        assert_eq!(merged_shape.shape, vec![2, 3, 4, 5]); // No change
+        assert_eq!(merged_shape.strides, vec![60, 20, 5, 1]);
+
+        // Test empty ranges (no operation)
+        let shape = TensorShape::new(vec![2, 3, 4]);
+        let merged_shape = shape.merge(&[]);
+        assert_eq!(merged_shape.shape, vec![2, 3, 4]);
+        assert_eq!(merged_shape.strides, vec![12, 4, 1]);
+
+        // Test complex case with multiple ranges
+        let shape = TensorShape::new(vec![2, 3, 4, 5, 6, 7]);
+        let merged_shape = shape.merge(&[0..=0, 2..=3, 5..=5]);
+        assert_eq!(merged_shape.shape, vec![2, 3, 20, 6, 7]); // [2, 3, 4*5, 6, 7] = [2, 3, 20, 6, 7]
+        assert_eq!(merged_shape.strides, vec![2520, 840, 42, 7, 1]);
+
+        // Test that index mapping is preserved after merging
+        let original_shape = TensorShape::new(vec![2, 3, 4]);
+        let merged_shape = original_shape.merge(&[1..=2]);
+
+        // Verify some key mappings: [i, j, k] in original -> [i, j*4+k] in merged
+        assert_eq!(
+            original_shape.ravel_index(&[0, 0, 0]),
+            merged_shape.ravel_index(&[0, 0])
+        );
+        assert_eq!(
+            original_shape.ravel_index(&[0, 1, 2]),
+            merged_shape.ravel_index(&[0, 6])
+        ); // j=1, k=2 -> 1*4+2=6
+        assert_eq!(
+            original_shape.ravel_index(&[1, 2, 3]),
+            merged_shape.ravel_index(&[1, 11])
+        ); // j=2, k=3 -> 2*4+3=11
+
+        // Test with 1D tensor
+        let shape = TensorShape::new(vec![10]);
+        let merged_shape = shape.merge(&[0..=0]);
+        assert_eq!(merged_shape.shape, vec![10]);
+        assert_eq!(merged_shape.strides, vec![1]);
+
+        // Test larger merging scenario
+        let shape = TensorShape::new(vec![2, 3, 4, 5, 6, 7, 8]);
+        let merged_shape = shape.merge(&[1..=3, 5..=6]);
+        assert_eq!(merged_shape.shape, vec![2, 60, 6, 56]); // [2, 3*4*5, 6, 7*8] = [2, 60, 6, 56]
+        assert_eq!(merged_shape.strides, vec![20160, 336, 56, 1]);
     }
 }
