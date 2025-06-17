@@ -48,6 +48,11 @@ impl TensorShape {
 
         indices
     }
+
+    fn permute_dimensions(&mut self, permuted_indices: &[usize]) {
+        self.shape = permuted_indices.iter().map(|&i| self.shape[i]).collect();
+        self.strides = permuted_indices.iter().map(|&i| self.strides[i]).collect();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -405,5 +410,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_permute_dimensions() {
+        // Test 2D permutation (transpose)
+        let mut shape_2d = TensorShape::new(vec![3, 4]);
+        assert_eq!(shape_2d.shape, vec![3, 4]);
+        assert_eq!(shape_2d.strides, vec![4, 1]);
+        
+        shape_2d.permute_dimensions(&[1, 0]); // transpose
+        assert_eq!(shape_2d.shape, vec![4, 3]);
+        assert_eq!(shape_2d.strides, vec![1, 4]);
+        
+        // Test 3D permutation
+        let mut shape_3d = TensorShape::new(vec![2, 3, 4]);
+        assert_eq!(shape_3d.shape, vec![2, 3, 4]);
+        assert_eq!(shape_3d.strides, vec![12, 4, 1]);
+        
+        // Permute to [2, 0, 1] - move last dimension to front
+        shape_3d.permute_dimensions(&[2, 0, 1]);
+        assert_eq!(shape_3d.shape, vec![4, 2, 3]);
+        assert_eq!(shape_3d.strides, vec![1, 12, 4]);
+        
+        // Test 4D permutation
+        let mut shape_4d = TensorShape::new(vec![2, 3, 4, 5]);
+        assert_eq!(shape_4d.shape, vec![2, 3, 4, 5]);
+        assert_eq!(shape_4d.strides, vec![60, 20, 5, 1]);
+        
+        // Reverse the dimensions
+        shape_4d.permute_dimensions(&[3, 2, 1, 0]);
+        assert_eq!(shape_4d.shape, vec![5, 4, 3, 2]);
+        assert_eq!(shape_4d.strides, vec![1, 5, 20, 60]);
+        
+        // Test identity permutation (no change)
+        let mut shape_identity = TensorShape::new(vec![2, 3, 4]);
+        let original_shape = shape_identity.shape.clone();
+        let original_strides = shape_identity.strides.clone();
+        
+        shape_identity.permute_dimensions(&[0, 1, 2]);
+        assert_eq!(shape_identity.shape, original_shape);
+        assert_eq!(shape_identity.strides, original_strides);
+        
+        // Test with single dimension
+        let mut shape_1d = TensorShape::new(vec![10]);
+        assert_eq!(shape_1d.shape, vec![10]);
+        assert_eq!(shape_1d.strides, vec![1]);
+        
+        shape_1d.permute_dimensions(&[0]);
+        assert_eq!(shape_1d.shape, vec![10]);
+        assert_eq!(shape_1d.strides, vec![1]);
+        
+        // Test permutation preserves index mapping
+        let original_shape = TensorShape::new(vec![2, 3, 4]);
+        let mut permuted_shape = original_shape.clone();
+        permuted_shape.permute_dimensions(&[1, 2, 0]); // [3, 4, 2]
+        
+        // Verify that the same multi-dimensional indices map correctly
+        // Original: [i, j, k] -> permuted: [j, k, i]
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    let original_flat = original_shape.ravel_index(&[i, j, k]);
+                    let permuted_flat = permuted_shape.ravel_index(&[j, k, i]);
+                    assert_eq!(
+                        original_flat, permuted_flat,
+                        "Index mismatch for [{}, {}, {}] vs [{}, {}, {}]",
+                        i, j, k, j, k, i
+                    );
+                }
+            }
+        }
+        
+        // Test empty shape
+        let mut empty_shape = TensorShape::new(vec![]);
+        empty_shape.permute_dimensions(&[]);
+        assert_eq!(empty_shape.shape, vec![]);
+        assert_eq!(empty_shape.strides, vec![]);
     }
 }
