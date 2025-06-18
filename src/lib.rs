@@ -9,6 +9,7 @@ use num_traits::Zero;
 struct TensorShape {
     shape: Vec<usize>,
     strides: Vec<usize>,
+    linear_offset: usize,
 }
 
 impl TensorShape {
@@ -17,7 +18,11 @@ impl TensorShape {
         for i in (0..shape.len().saturating_sub(1)).rev() {
             strides[i] = strides[i + 1] * shape[i + 1];
         }
-        TensorShape { shape, strides }
+        TensorShape {
+            shape,
+            strides,
+            linear_offset: 0,
+        }
     }
 
     fn size(&self) -> usize {
@@ -55,7 +60,11 @@ impl TensorShape {
     fn permute(&self, permuted_indices: &[usize]) -> Self {
         let shape = permuted_indices.iter().map(|&i| self.shape[i]).collect();
         let strides = permuted_indices.iter().map(|&i| self.strides[i]).collect();
-        Self { shape, strides }
+        Self {
+            shape,
+            strides,
+            linear_offset: self.linear_offset,
+        }
     }
 
     fn merge(&self, dim_ranges: &[RangeInclusive<usize>]) -> Self {
@@ -99,7 +108,11 @@ impl TensorShape {
         shape.extend_from_slice(&self.shape[current_pos..]);
         strides.extend_from_slice(&self.strides[current_pos..]);
 
-        Self { shape, strides }
+        Self {
+            shape,
+            strides,
+            linear_offset: self.linear_offset,
+        }
     }
 
     fn split(&self, splits: &HashMap<usize, Vec<usize>>) -> Self {
@@ -175,7 +188,37 @@ impl TensorShape {
         shape.extend_from_slice(&self.shape[current_dim..]);
         strides.extend_from_slice(&self.strides[current_dim..]);
 
-        Self { shape, strides }
+        Self {
+            shape,
+            strides,
+            linear_offset: self.linear_offset,
+        }
+    }
+
+    fn slice(&self, slices: &HashMap<usize, RangeInclusive<usize>>) -> Self {
+        if slices.is_empty() {
+            return self.clone();
+        }
+
+        let mut new_shape = self.shape.clone();
+        let mut additional_offset = 0;
+
+        for (&dim, range) in slices {
+            let start = *range.start();
+            let end = *range.end();
+
+            // Calculate offset contribution from this dimension
+            additional_offset += start * self.strides[dim];
+
+            // Update shape for this dimension (inclusive range)
+            new_shape[dim] = end - start + 1;
+        }
+
+        Self {
+            shape: new_shape,
+            strides: self.strides.clone(),
+            linear_offset: self.linear_offset + additional_offset,
+        }
     }
 }
 
@@ -805,5 +848,91 @@ mod tests {
         let split_shape = shape.split(&splits);
         assert_eq!(split_shape.shape, vec![2, 1, 3, 4]);
         assert_eq!(split_shape.strides, vec![12, 12, 4, 1]);
+    }
+
+    #[test]
+    fn test_slice() {
+        // Test basic 2D slicing
+        let shape = TensorShape::new(vec![5, 6]);
+        assert_eq!(shape.shape, vec![5, 6]);
+        assert_eq!(shape.strides, vec![6, 1]);
+        assert_eq!(shape.linear_offset, 0);
+
+        let mut slices = HashMap::new();
+        slices.insert(0, 1..=3); // Take rows 1, 2, 3
+        slices.insert(1, 2..=4); // Take cols 2, 3, 4
+        let sliced_shape = shape.slice(&slices);
+
+        assert_eq!(sliced_shape.shape, vec![3, 3]); // 3 rows, 3 cols
+        assert_eq!(sliced_shape.strides, vec![6, 1]); // Strides unchanged
+        assert_eq!(sliced_shape.linear_offset, 1 * 6 + 2 * 1); // 1*6 + 2*1 = 8
+
+        // Test 3D slicing
+        let shape_3d = TensorShape::new(vec![4, 5, 6]);
+        assert_eq!(shape_3d.strides, vec![30, 6, 1]);
+
+        let mut slices_3d = HashMap::new();
+        slices_3d.insert(0, 1..=2); // Take planes 1, 2
+        slices_3d.insert(2, 1..=4); // Take last dim elements 1, 2, 3, 4
+        let sliced_3d = shape_3d.slice(&slices_3d);
+
+        assert_eq!(sliced_3d.shape, vec![2, 5, 4]); // [2 planes, 5 rows, 4 cols]
+        assert_eq!(sliced_3d.strides, vec![30, 6, 1]); // Strides unchanged
+        assert_eq!(sliced_3d.linear_offset, 1 * 30 + 1 * 1); // 1*30 + 0*6 + 1*1 = 31
+
+        // Test single dimension slicing
+        let shape_1d = TensorShape::new(vec![10]);
+        let mut slices_1d = HashMap::new();
+        slices_1d.insert(0, 3..=7); // Take elements 3, 4, 5, 6, 7
+        let sliced_1d = shape_1d.slice(&slices_1d);
+
+        assert_eq!(sliced_1d.shape, vec![5]); // 5 elements
+        assert_eq!(sliced_1d.strides, vec![1]);
+        assert_eq!(sliced_1d.linear_offset, 3); // Start at element 3
+
+        // Test partial slicing (only some dimensions)
+        let shape_partial = TensorShape::new(vec![3, 4, 5]);
+        let mut slices_partial = HashMap::new();
+        slices_partial.insert(1, 1..=2); // Only slice middle dimension
+        let sliced_partial = shape_partial.slice(&slices_partial);
+
+        assert_eq!(sliced_partial.shape, vec![3, 2, 5]); // Only middle dim changed
+        assert_eq!(sliced_partial.strides, vec![20, 5, 1]);
+        assert_eq!(sliced_partial.linear_offset, 1 * 5); // 0*20 + 1*5 + 0*1 = 5
+
+        // Test empty slices (no operation)
+        let shape_empty = TensorShape::new(vec![3, 4]);
+        let sliced_empty = shape_empty.slice(&HashMap::new());
+        assert_eq!(sliced_empty.shape, vec![3, 4]);
+        assert_eq!(sliced_empty.strides, vec![4, 1]);
+        assert_eq!(sliced_empty.linear_offset, 0);
+
+        // Test single element slices
+        let shape_single = TensorShape::new(vec![5, 5]);
+        let mut slices_single = HashMap::new();
+        slices_single.insert(0, 2..=2); // Single row
+        slices_single.insert(1, 3..=3); // Single column
+        let sliced_single = shape_single.slice(&slices_single);
+
+        assert_eq!(sliced_single.shape, vec![1, 1]); // Single element
+        assert_eq!(sliced_single.strides, vec![5, 1]);
+        assert_eq!(sliced_single.linear_offset, 2 * 5 + 3 * 1); // 13
+
+        // Test that index mapping is preserved after slicing
+        let original_shape = TensorShape::new(vec![4, 6]);
+        let mut test_slices = HashMap::new();
+        test_slices.insert(0, 1..=2); // Rows 1, 2
+        test_slices.insert(1, 2..=4); // Cols 2, 3, 4
+        let sliced_test = original_shape.slice(&test_slices);
+
+        // Verify that [0, 0] in sliced corresponds to [1, 2] in original
+        let sliced_flat = sliced_test.linear_offset + sliced_test.ravel_index(&[0, 0]);
+        let original_flat = original_shape.ravel_index(&[1, 2]);
+        assert_eq!(sliced_flat, original_flat);
+
+        // Verify that [1, 2] in sliced corresponds to [2, 4] in original
+        let sliced_flat = sliced_test.linear_offset + sliced_test.ravel_index(&[1, 2]);
+        let original_flat = original_shape.ravel_index(&[2, 4]);
+        assert_eq!(sliced_flat, original_flat);
     }
 }
