@@ -124,7 +124,7 @@ impl TensorShape {
         if let Some(zero_index) = zero_index {
             if original_size % non_zero_product != 0 {
                 panic!(
-                    "Cannot split dimension of size {} into sizes {:?} - not evenly divisible",
+                    "Cannot split dimension of size {} into sizes {:?}",
                     original_size, shape
                 );
             }
@@ -550,36 +550,30 @@ mod tests {
 
     #[test]
     fn test_permute() {
-        // Test 2D permutation (transpose)
         let shape_2d = TensorShape::new(vec![3, 4]);
         assert_eq!(shape_2d.shape, vec![3, 4]);
         assert_eq!(shape_2d.strides, vec![4, 1]);
 
-        let shape_2d = shape_2d.permute(&[1, 0]); // transpose
+        let shape_2d = shape_2d.permute(&[1, 0]);
         assert_eq!(shape_2d.shape, vec![4, 3]);
         assert_eq!(shape_2d.strides, vec![1, 4]);
 
-        // Test 3D permutation
         let shape_3d = TensorShape::new(vec![2, 3, 4]);
         assert_eq!(shape_3d.shape, vec![2, 3, 4]);
         assert_eq!(shape_3d.strides, vec![12, 4, 1]);
 
-        // Permute to [2, 0, 1] - move last dimension to front
         let shape_3d = shape_3d.permute(&[2, 0, 1]);
         assert_eq!(shape_3d.shape, vec![4, 2, 3]);
         assert_eq!(shape_3d.strides, vec![1, 12, 4]);
 
-        // Test 4D permutation
         let shape_4d = TensorShape::new(vec![2, 3, 4, 5]);
         assert_eq!(shape_4d.shape, vec![2, 3, 4, 5]);
         assert_eq!(shape_4d.strides, vec![60, 20, 5, 1]);
 
-        // Reverse the dimensions
         let shape_4d = shape_4d.permute(&[3, 2, 1, 0]);
         assert_eq!(shape_4d.shape, vec![5, 4, 3, 2]);
         assert_eq!(shape_4d.strides, vec![1, 5, 20, 60]);
 
-        // Test identity permutation (no change)
         let shape_identity = TensorShape::new(vec![2, 3, 4]);
         let original_shape = shape_identity.shape.clone();
         let original_strides = shape_identity.strides.clone();
@@ -588,7 +582,6 @@ mod tests {
         assert_eq!(shape_identity.shape, original_shape);
         assert_eq!(shape_identity.strides, original_strides);
 
-        // Test with single dimension
         let shape_1d = TensorShape::new(vec![10]);
         assert_eq!(shape_1d.shape, vec![10]);
         assert_eq!(shape_1d.strides, vec![1]);
@@ -597,12 +590,9 @@ mod tests {
         assert_eq!(shape_1d.shape, vec![10]);
         assert_eq!(shape_1d.strides, vec![1]);
 
-        // Test permutation preserves index mapping
         let original_shape = TensorShape::new(vec![2, 3, 4]);
         let permuted_shape = original_shape.permute(&[1, 2, 0]);
 
-        // Verify that the same multi-dimensional indices map correctly
-        // Original: [i, j, k] -> permuted: [j, k, i]
         for i in 0..2 {
             for j in 0..3 {
                 for k in 0..4 {
@@ -617,7 +607,6 @@ mod tests {
             }
         }
 
-        // Test empty shape
         let empty_shape = TensorShape::new(vec![]).permute(&[]);
         assert_eq!(empty_shape.shape, vec![]);
         assert_eq!(empty_shape.strides, vec![]);
@@ -625,26 +614,22 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        // Test merge in the middle
         let shape = TensorShape::new(vec![2, 3, 4, 5]);
         assert_eq!(shape.shape, vec![2, 3, 4, 5]);
         assert_eq!(shape.strides, vec![60, 20, 5, 1]);
 
         let merged_shape = shape.merge(1..=2);
-        assert_eq!(merged_shape.shape, vec![2, 12, 5]); // 3 * 4 = 12
+        assert_eq!(merged_shape.shape, vec![2, 12, 5]);
         assert_eq!(merged_shape.strides, vec![60, 5, 1]);
 
-        // Test single dimension merge (no actual merging)
         let shape = TensorShape::new(vec![2, 3, 4, 5]);
         let merged_shape = shape.merge(1..=1);
-        assert_eq!(merged_shape.shape, vec![2, 3, 4, 5]); // No change
+        assert_eq!(merged_shape.shape, vec![2, 3, 4, 5]);
         assert_eq!(merged_shape.strides, vec![60, 20, 5, 1]);
 
-        // Test that index mapping is preserved after merging
         let original_shape = TensorShape::new(vec![2, 3, 4]);
         let merged_shape = original_shape.merge(1..=2);
 
-        // Verify some key mappings: [i, j, k] in original -> [i, j*4+k] in merged
         assert_eq!(
             original_shape.ravel_index(&[0, 0, 0]),
             merged_shape.ravel_index(&[0, 0])
@@ -652,13 +637,12 @@ mod tests {
         assert_eq!(
             original_shape.ravel_index(&[0, 1, 2]),
             merged_shape.ravel_index(&[0, 6])
-        ); // j=1, k=2 -> 1*4+2=6
+        );
         assert_eq!(
             original_shape.ravel_index(&[1, 2, 3]),
             merged_shape.ravel_index(&[1, 11])
-        ); // j=2, k=3 -> 2*4+3=11
+        );
 
-        // Test with 1D tensor
         let shape = TensorShape::new(vec![10]);
         let merged_shape = shape.merge(0..=0);
         assert_eq!(merged_shape.shape, vec![10]);
@@ -667,47 +651,39 @@ mod tests {
 
     #[test]
     fn test_split() {
-        // Test basic split without wildcards
         let shape = TensorShape::new(vec![2, 12, 5]);
-        let split_shape = shape.split(1, &[3, 4]); // Split dimension 1 (size 12) into [3, 4]
+        let split_shape = shape.split(1, &[3, 4]);
         assert_eq!(split_shape.shape, vec![2, 3, 4, 5]);
         assert_eq!(split_shape.strides, vec![60, 20, 5, 1]);
 
-        // Test split with wildcard (zero)
         let shape = TensorShape::new(vec![24]);
-        let split_shape = shape.split(0, &[2, 3, 0]); // Split dimension 0 (size 24) into [2, 3, ?] where ? = 24/(2*3) = 4
+        let split_shape = shape.split(0, &[2, 3, 0]);
         assert_eq!(split_shape.shape, vec![2, 3, 4]);
         assert_eq!(split_shape.strides, vec![12, 4, 1]);
 
-        // Test split at the end
         let shape = TensorShape::new(vec![2, 3, 24]);
-        let split_shape = shape.split(2, &[4, 6]); // Split last dimension (size 24) into [4, 6]
+        let split_shape = shape.split(2, &[4, 6]);
         assert_eq!(split_shape.shape, vec![2, 3, 4, 6]);
         assert_eq!(split_shape.strides, vec![72, 24, 6, 1]);
 
-        // Test split at the beginning
         let shape = TensorShape::new(vec![12, 3, 4]);
-        let split_shape = shape.split(0, &[3, 4]); // Split first dimension (size 12) into [3, 4]
+        let split_shape = shape.split(0, &[3, 4]);
         assert_eq!(split_shape.shape, vec![3, 4, 3, 4]);
         assert_eq!(split_shape.strides, vec![48, 12, 4, 1]);
 
-        // Test single dimension split
         let shape = TensorShape::new(vec![30]);
         let split_shape = shape.split(0, &[5, 6]);
         assert_eq!(split_shape.shape, vec![5, 6]);
         assert_eq!(split_shape.strides, vec![6, 1]);
 
-        // Test split with wildcard in middle
         let shape = TensorShape::new(vec![2, 60, 3]);
-        let split_shape = shape.split(1, &[4, 0, 5]); // Split dimension 1 (size 60) into [4, ?, 5] where ? = 60/(4*5) = 3
+        let split_shape = shape.split(1, &[4, 0, 5]);
         assert_eq!(split_shape.shape, vec![2, 4, 3, 5, 3]);
         assert_eq!(split_shape.strides, vec![180, 45, 15, 3, 1]);
 
-        // Test that index mapping is preserved after splitting
         let original_shape = TensorShape::new(vec![6, 8]);
-        let split_shape = original_shape.split(0, &[2, 3]).split(2, &[4, 2]); // Split both dimensions
+        let split_shape = original_shape.split(0, &[2, 3]).split(2, &[4, 2]);
 
-        // Verify some key mappings: [i, j] in original -> [i/3, i%3, j/2, j%2] in split
         assert_eq!(
             original_shape.ravel_index(&[0, 0]),
             split_shape.ravel_index(&[0, 0, 0, 0])
@@ -715,83 +691,73 @@ mod tests {
         assert_eq!(
             original_shape.ravel_index(&[2, 6]),
             split_shape.ravel_index(&[0, 2, 3, 0])
-        ); // i=2 -> [0, 2], j=6 -> [3, 0]
+        );
         assert_eq!(
             original_shape.ravel_index(&[5, 7]),
             split_shape.ravel_index(&[1, 2, 3, 1])
-        ); // i=5 -> [1, 2], j=7 -> [3, 1]
+        );
 
-        // Test edge case: split into single elements
         let shape = TensorShape::new(vec![4]);
         let split_shape = shape.split(0, &[4, 1]);
         assert_eq!(split_shape.shape, vec![4, 1]);
         assert_eq!(split_shape.strides, vec![1, 1]);
 
-        // Test split that results in same total size
         let shape = TensorShape::new(vec![2, 3, 4]);
-        let split_shape = shape.split(1, &[1, 3]); // Split dimension 1 (size 3) into [1, 3]
+        let split_shape = shape.split(1, &[1, 3]);
         assert_eq!(split_shape.shape, vec![2, 1, 3, 4]);
         assert_eq!(split_shape.strides, vec![12, 12, 4, 1]);
     }
 
     #[test]
     fn test_slice() {
-        // Test basic 2D slicing
         let shape = TensorShape::new(vec![5, 6]);
         assert_eq!(shape.shape, vec![5, 6]);
         assert_eq!(shape.strides, vec![6, 1]);
         assert_eq!(shape.linear_offset, 0);
 
-        let sliced_shape = shape.slice(0, 1..=3).slice(1, 2..=4); // Take rows 1, 2, 3 and cols 2, 3, 4
+        let sliced_shape = shape.slice(0, 1..=3).slice(1, 2..=4);
 
-        assert_eq!(sliced_shape.shape, vec![3, 3]); // 3 rows, 3 cols
-        assert_eq!(sliced_shape.strides, vec![6, 1]); // Strides unchanged
-        assert_eq!(sliced_shape.linear_offset, 1 * 6 + 2 * 1); // 1*6 + 2*1 = 8
+        assert_eq!(sliced_shape.shape, vec![3, 3]);
+        assert_eq!(sliced_shape.strides, vec![6, 1]);
+        assert_eq!(sliced_shape.linear_offset, 1 * 6 + 2 * 1);
 
-        // Test 3D slicing
         let shape_3d = TensorShape::new(vec![4, 5, 6]);
         assert_eq!(shape_3d.strides, vec![30, 6, 1]);
 
-        let sliced_3d = shape_3d.slice(0, 1..=2).slice(2, 1..=4); // Take planes 1, 2 and last dim elements 1, 2, 3, 4
+        let sliced_3d = shape_3d.slice(0, 1..=2).slice(2, 1..=4);
 
-        assert_eq!(sliced_3d.shape, vec![2, 5, 4]); // [2 planes, 5 rows, 4 cols]
-        assert_eq!(sliced_3d.strides, vec![30, 6, 1]); // Strides unchanged
-        assert_eq!(sliced_3d.linear_offset, 1 * 30 + 1 * 1); // 1*30 + 0*6 + 1*1 = 31
+        assert_eq!(sliced_3d.shape, vec![2, 5, 4]);
+        assert_eq!(sliced_3d.strides, vec![30, 6, 1]);
+        assert_eq!(sliced_3d.linear_offset, 1 * 30 + 1 * 1);
 
-        // Test single dimension slicing
         let shape_1d = TensorShape::new(vec![10]);
-        let sliced_1d = shape_1d.slice(0, 3..=7); // Take elements 3, 4, 5, 6, 7
+        let sliced_1d = shape_1d.slice(0, 3..=7);
 
-        assert_eq!(sliced_1d.shape, vec![5]); // 5 elements
+        assert_eq!(sliced_1d.shape, vec![5]);
         assert_eq!(sliced_1d.strides, vec![1]);
-        assert_eq!(sliced_1d.linear_offset, 3); // Start at element 3
+        assert_eq!(sliced_1d.linear_offset, 3);
 
-        // Test partial slicing (only some dimensions)
         let shape_partial = TensorShape::new(vec![3, 4, 5]);
-        let sliced_partial = shape_partial.slice(1, 1..=2); // Only slice middle dimension
+        let sliced_partial = shape_partial.slice(1, 1..=2);
 
-        assert_eq!(sliced_partial.shape, vec![3, 2, 5]); // Only middle dim changed
+        assert_eq!(sliced_partial.shape, vec![3, 2, 5]);
         assert_eq!(sliced_partial.strides, vec![20, 5, 1]);
-        assert_eq!(sliced_partial.linear_offset, 1 * 5); // 0*20 + 1*5 + 0*1 = 5
+        assert_eq!(sliced_partial.linear_offset, 1 * 5);
 
-        // Test single element slices
         let shape_single = TensorShape::new(vec![5, 5]);
-        let sliced_single = shape_single.slice(0, 2..=2).slice(1, 3..=3); // Single row and column
+        let sliced_single = shape_single.slice(0, 2..=2).slice(1, 3..=3);
 
-        assert_eq!(sliced_single.shape, vec![1, 1]); // Single element
+        assert_eq!(sliced_single.shape, vec![1, 1]);
         assert_eq!(sliced_single.strides, vec![5, 1]);
-        assert_eq!(sliced_single.linear_offset, 2 * 5 + 3 * 1); // 13
+        assert_eq!(sliced_single.linear_offset, 2 * 5 + 3 * 1);
 
-        // Test that index mapping is preserved after slicing
         let original_shape = TensorShape::new(vec![4, 6]);
-        let sliced_test = original_shape.slice(0, 1..=2).slice(1, 2..=4); // Rows 1, 2 and cols 2, 3, 4
+        let sliced_test = original_shape.slice(0, 1..=2).slice(1, 2..=4);
 
-        // Verify that [0, 0] in sliced corresponds to [1, 2] in original
         let sliced_flat = sliced_test.linear_offset + sliced_test.ravel_index(&[0, 0]);
         let original_flat = original_shape.ravel_index(&[1, 2]);
         assert_eq!(sliced_flat, original_flat);
 
-        // Verify that [1, 2] in sliced corresponds to [2, 4] in original
         let sliced_flat = sliced_test.linear_offset + sliced_test.ravel_index(&[1, 2]);
         let original_flat = original_shape.ravel_index(&[2, 4]);
         assert_eq!(sliced_flat, original_flat);
