@@ -224,6 +224,40 @@ struct Tensor<T> {
     storage: TensorStorage<T>,
 }
 
+impl<T: Clone> Tensor<T> {
+    fn permute(&self, permuted_indices: &[usize]) -> Self {
+        let new_shape = self.shape.permute(permuted_indices);
+        Tensor {
+            shape: new_shape,
+            storage: self.storage.clone(),
+        }
+    }
+
+    fn merge(&self, dim_range: RangeInclusive<usize>) -> Self {
+        let new_shape = self.shape.merge(dim_range);
+        Tensor {
+            shape: new_shape,
+            storage: self.storage.clone(),
+        }
+    }
+
+    fn split(&self, dim: usize, shape: &[usize]) -> Self {
+        let new_shape = self.shape.split(dim, shape);
+        Tensor {
+            shape: new_shape,
+            storage: self.storage.clone(),
+        }
+    }
+
+    fn slice(&self, dim: usize, range: RangeInclusive<usize>) -> Self {
+        let new_shape = self.shape.slice(dim, range);
+        Tensor {
+            shape: new_shape,
+            storage: self.storage.clone(),
+        }
+    }
+}
+
 impl<T: Zero + Clone> Tensor<T> {
     fn zeros(shape: Vec<usize>) -> Self {
         let shape = TensorShape::new(shape);
