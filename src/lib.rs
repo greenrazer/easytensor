@@ -189,6 +189,22 @@ impl TensorShape {
             linear_offset: self.linear_offset + additional_offset,
         }
     }
+
+    fn skip(&self, dim: usize, step: usize) -> Self {
+        // perform the equivalent of slicing with no range, but a step
+        if dim >= self.shape.len() {
+            panic!("Dimension index out of bounds");
+        }
+
+        let mut new_strides = self.strides.clone();
+        new_strides[dim] = new_strides[dim] * step;
+
+        Self {
+            shape: self.shape.clone(),
+            strides: new_strides,
+            linear_offset: self.linear_offset,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,33 +242,36 @@ struct Tensor<T> {
 
 impl<T: Clone> Tensor<T> {
     fn permute(&self, permuted_indices: &[usize]) -> Self {
-        let new_shape = self.shape.permute(permuted_indices);
         Tensor {
-            shape: new_shape,
+            shape: self.shape.permute(permuted_indices),
             storage: self.storage.clone(),
         }
     }
 
     fn merge(&self, dim_range: RangeInclusive<usize>) -> Self {
-        let new_shape = self.shape.merge(dim_range);
         Tensor {
-            shape: new_shape,
+            shape: self.shape.merge(dim_range),
             storage: self.storage.clone(),
         }
     }
 
     fn split(&self, dim: usize, shape: &[usize]) -> Self {
-        let new_shape = self.shape.split(dim, shape);
         Tensor {
-            shape: new_shape,
+            shape: self.shape.split(dim, shape),
             storage: self.storage.clone(),
         }
     }
 
     fn slice(&self, dim: usize, range: RangeInclusive<usize>) -> Self {
-        let new_shape = self.shape.slice(dim, range);
         Tensor {
-            shape: new_shape,
+            shape: self.shape.slice(dim, range),
+            storage: self.storage.clone(),
+        }
+    }
+
+    fn skip(&self, dim: usize, step: usize) -> Self {
+        Tensor {
+            shape: self.shape.skip(dim, step),
             storage: self.storage.clone(),
         }
     }
@@ -795,5 +814,71 @@ mod tests {
         let sliced_flat = sliced_test.linear_offset + sliced_test.ravel_index(&[1, 2]);
         let original_flat = original_shape.ravel_index(&[2, 4]);
         assert_eq!(sliced_flat, original_flat);
+    }
+
+    #[test]
+    fn test_skip() {
+        let shape_1d = TensorShape::new(vec![10]);
+        assert_eq!(shape_1d.strides, vec![1]);
+
+        let skipped_1d = shape_1d.skip(0, 2);
+        assert_eq!(skipped_1d.shape, vec![10]);
+        assert_eq!(skipped_1d.strides, vec![2]);
+        assert_eq!(skipped_1d.linear_offset, 0);
+
+        let shape_2d = TensorShape::new(vec![4, 6]);
+        assert_eq!(shape_2d.strides, vec![6, 1]);
+
+        let skipped_dim0 = shape_2d.skip(0, 2);
+        assert_eq!(skipped_dim0.shape, vec![4, 6]);
+        assert_eq!(skipped_dim0.strides, vec![12, 1]);
+        assert_eq!(skipped_dim0.linear_offset, 0);
+
+        let skipped_dim1 = shape_2d.skip(1, 3);
+        assert_eq!(skipped_dim1.shape, vec![4, 6]);
+        assert_eq!(skipped_dim1.strides, vec![6, 3]);
+        assert_eq!(skipped_dim1.linear_offset, 0);
+
+        let shape_3d = TensorShape::new(vec![3, 4, 5]);
+        assert_eq!(shape_3d.strides, vec![20, 5, 1]);
+
+        let skipped_3d = shape_3d.skip(1, 2);
+        assert_eq!(skipped_3d.shape, vec![3, 4, 5]);
+        assert_eq!(skipped_3d.strides, vec![20, 10, 1]);
+        assert_eq!(skipped_3d.linear_offset, 0);
+
+        let shape_chain = TensorShape::new(vec![6, 8]);
+        let double_skipped = shape_chain.skip(0, 2).skip(1, 3);
+        assert_eq!(double_skipped.shape, vec![6, 8]);
+        assert_eq!(double_skipped.strides, vec![16, 3]);
+        assert_eq!(double_skipped.linear_offset, 0);
+
+        let shape_noop = TensorShape::new(vec![5, 7]);
+        let no_change = shape_noop.skip(0, 1).skip(1, 1);
+        assert_eq!(no_change.shape, shape_noop.shape);
+        assert_eq!(no_change.strides, shape_noop.strides);
+        assert_eq!(no_change.linear_offset, shape_noop.linear_offset);
+
+        let shape_with_offset = TensorShape {
+            shape: vec![4, 5],
+            strides: vec![5, 1],
+            linear_offset: 10,
+        };
+
+        let skipped_with_offset = shape_with_offset.skip(0, 3);
+        assert_eq!(skipped_with_offset.shape, vec![4, 5]);
+        assert_eq!(skipped_with_offset.strides, vec![15, 1]);
+        assert_eq!(skipped_with_offset.linear_offset, 10);
+
+        let original_shape = TensorShape::new(vec![4, 6]);
+        let skipped_shape = original_shape.skip(1, 2);
+
+        let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[1, 2]);
+        let original_flat = original_shape.ravel_index(&[1, 4]);
+        assert_eq!(skipped_flat, original_flat);
+
+        let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[0, 1]);
+        let original_flat = original_shape.ravel_index(&[0, 2]); // 0*6 + 2*1 = 2
+        assert_eq!(skipped_flat, original_flat);
     }
 }
