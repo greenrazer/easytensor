@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    ops::{Index, IndexMut, RangeInclusive},
+    ops::{Div, Index, IndexMut, RangeInclusive},
 };
 
 use num_traits::Zero;
@@ -199,8 +199,11 @@ impl TensorShape {
         let mut new_strides = self.strides.clone();
         new_strides[dim] = new_strides[dim] * step;
 
+        let mut new_shape = self.shape.clone();
+        new_shape[dim] = new_shape[dim].div_ceil(step);
+
         Self {
-            shape: self.shape.clone(),
+            shape: new_shape,
             strides: new_strides,
             linear_offset: self.linear_offset,
         }
@@ -816,69 +819,111 @@ mod tests {
         assert_eq!(sliced_flat, original_flat);
     }
 
-    #[test]
+   #[test]
     fn test_skip() {
+        // Test 1D tensor skip
         let shape_1d = TensorShape::new(vec![10]);
         assert_eq!(shape_1d.strides, vec![1]);
-
+        
         let skipped_1d = shape_1d.skip(0, 2);
-        assert_eq!(skipped_1d.shape, vec![10]);
-        assert_eq!(skipped_1d.strides, vec![2]);
-        assert_eq!(skipped_1d.linear_offset, 0);
+        assert_eq!(skipped_1d.shape, vec![5]); // 10.div_ceil(2) = 5
+        assert_eq!(skipped_1d.strides, vec![2]); // stride doubled
+        assert_eq!(skipped_1d.linear_offset, 0); // offset unchanged
 
-        let shape_2d = TensorShape::new(vec![4, 6]);
-        assert_eq!(shape_2d.strides, vec![6, 1]);
+        // Test 1D tensor skip with odd size
+        let shape_1d_odd = TensorShape::new(vec![9]);
+        let skipped_1d_odd = shape_1d_odd.skip(0, 2);
+        assert_eq!(skipped_1d_odd.shape, vec![5]); // 9.div_ceil(2) = 5
+        assert_eq!(skipped_1d_odd.strides, vec![2]);
 
+        // Test 2D tensor skip on different dimensions
+        let shape_2d = TensorShape::new(vec![6, 8]);
+        assert_eq!(shape_2d.strides, vec![8, 1]);
+        
+        // Skip every 2nd element in first dimension
         let skipped_dim0 = shape_2d.skip(0, 2);
-        assert_eq!(skipped_dim0.shape, vec![4, 6]);
-        assert_eq!(skipped_dim0.strides, vec![12, 1]);
+        assert_eq!(skipped_dim0.shape, vec![3, 8]); // 6.div_ceil(2) = 3
+        assert_eq!(skipped_dim0.strides, vec![16, 1]); // first stride doubled
         assert_eq!(skipped_dim0.linear_offset, 0);
-
+        
+        // Skip every 3rd element in second dimension
         let skipped_dim1 = shape_2d.skip(1, 3);
-        assert_eq!(skipped_dim1.shape, vec![4, 6]);
-        assert_eq!(skipped_dim1.strides, vec![6, 3]);
+        assert_eq!(skipped_dim1.shape, vec![6, 3]); // 8.div_ceil(3) = 3
+        assert_eq!(skipped_dim1.strides, vec![8, 3]); // second stride tripled
         assert_eq!(skipped_dim1.linear_offset, 0);
 
-        let shape_3d = TensorShape::new(vec![3, 4, 5]);
-        assert_eq!(shape_3d.strides, vec![20, 5, 1]);
-
+        // Test 3D tensor skip
+        let shape_3d = TensorShape::new(vec![4, 6, 8]);
+        assert_eq!(shape_3d.strides, vec![48, 8, 1]);
+        
         let skipped_3d = shape_3d.skip(1, 2);
-        assert_eq!(skipped_3d.shape, vec![3, 4, 5]);
-        assert_eq!(skipped_3d.strides, vec![20, 10, 1]);
+        assert_eq!(skipped_3d.shape, vec![4, 3, 8]); // 6.div_ceil(2) = 3
+        assert_eq!(skipped_3d.strides, vec![48, 16, 1]); // middle stride doubled
         assert_eq!(skipped_3d.linear_offset, 0);
 
-        let shape_chain = TensorShape::new(vec![6, 8]);
+        // Test chaining skip operations
+        let shape_chain = TensorShape::new(vec![8, 9]);
         let double_skipped = shape_chain.skip(0, 2).skip(1, 3);
-        assert_eq!(double_skipped.shape, vec![6, 8]);
-        assert_eq!(double_skipped.strides, vec![16, 3]);
+        assert_eq!(double_skipped.shape, vec![4, 3]); // 8.div_ceil(2) = 4, 9.div_ceil(3) = 3
+        assert_eq!(double_skipped.strides, vec![18, 3]); // 9*2, 1*3
         assert_eq!(double_skipped.linear_offset, 0);
 
+        // Test skip with step 1 (should be no-op)
         let shape_noop = TensorShape::new(vec![5, 7]);
         let no_change = shape_noop.skip(0, 1).skip(1, 1);
         assert_eq!(no_change.shape, shape_noop.shape);
         assert_eq!(no_change.strides, shape_noop.strides);
         assert_eq!(no_change.linear_offset, shape_noop.linear_offset);
 
+        // Test various div_ceil cases
+        let test_cases = vec![
+            (10, 2, 5), // 10/2 = 5
+            (10, 3, 4), // 10/3 = 3.33... -> 4
+            (9, 3, 3),  // 9/3 = 3
+            (7, 4, 2),  // 7/4 = 1.75 -> 2
+            (1, 2, 1),  // 1/2 = 0.5 -> 1
+        ];
+        
+        for (original_size, step, expected_size) in test_cases {
+            let shape = TensorShape::new(vec![original_size]);
+            let skipped = shape.skip(0, step);
+            assert_eq!(skipped.shape[0], expected_size, 
+                    "Failed for {}.div_ceil({}) = {}", original_size, step, expected_size);
+        }
+
+        // Test that skip preserves existing linear_offset
         let shape_with_offset = TensorShape {
-            shape: vec![4, 5],
-            strides: vec![5, 1],
+            shape: vec![6, 8],
+            strides: vec![8, 1],
             linear_offset: 10,
         };
-
+        
         let skipped_with_offset = shape_with_offset.skip(0, 3);
-        assert_eq!(skipped_with_offset.shape, vec![4, 5]);
-        assert_eq!(skipped_with_offset.strides, vec![15, 1]);
-        assert_eq!(skipped_with_offset.linear_offset, 10);
+        assert_eq!(skipped_with_offset.shape, vec![2, 8]); // 6.div_ceil(3) = 2
+        assert_eq!(skipped_with_offset.strides, vec![24, 1]); // 8*3
+        assert_eq!(skipped_with_offset.linear_offset, 10); // preserved
 
-        let original_shape = TensorShape::new(vec![4, 6]);
+        // Test index mapping behavior - verify that skip correctly maps indices
+        let original_shape = TensorShape::new(vec![6, 8]);
         let skipped_shape = original_shape.skip(1, 2);
-
+        
+        // Skipped shape should be [6, 4] with strides [8, 2]
+        assert_eq!(skipped_shape.shape, vec![6, 4]);
+        assert_eq!(skipped_shape.strides, vec![8, 2]);
+        
+        // When we access [1, 2] in the skipped tensor, it should map to [1, 4] in original
         let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[1, 2]);
-        let original_flat = original_shape.ravel_index(&[1, 4]);
+        let original_flat = original_shape.ravel_index(&[1, 4]); // 1*8 + 4*1 = 12
         assert_eq!(skipped_flat, original_flat);
-
+        
+        // [0, 1] in skipped should map to [0, 2] in original  
         let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[0, 1]);
-        let original_flat = original_shape.ravel_index(&[0, 2]); // 0*6 + 2*1 = 2
+        let original_flat = original_shape.ravel_index(&[0, 2]); // 0*8 + 2*1 = 2
+        assert_eq!(skipped_flat, original_flat);
+        
+        // [2, 3] in skipped should map to [2, 6] in original
+        let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[2, 3]);
+        let original_flat = original_shape.ravel_index(&[2, 6]); // 2*8 + 6*1 = 22
         assert_eq!(skipped_flat, original_flat);
     }
 }
