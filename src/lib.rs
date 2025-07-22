@@ -215,6 +215,17 @@ struct TensorStorage<T> {
     data: Vec<T>,
 }
 
+impl<T> TensorStorage<T> {
+    fn map<F, U>(&self, f: F) -> TensorStorage<U>
+    where
+        F: Fn(&T) -> U
+    {
+        TensorStorage {
+            data: self.data.iter().map(f).collect(),
+        }
+    }
+}
+
 impl<T: Zero + Clone> TensorStorage<T> {
     fn zeros(size: usize) -> Self {
         TensorStorage {
@@ -241,6 +252,18 @@ impl<T> IndexMut<usize> for TensorStorage<T> {
 struct Tensor<T> {
     shape: TensorShape,
     storage: TensorStorage<T>,
+}
+
+impl<T> Tensor<T> {
+    fn map<F, U>(&self, f: F) -> Tensor<U>
+    where
+        F: Fn(&T) -> U,
+    {
+        Tensor {
+            shape: self.shape.clone(),
+            storage: self.storage.map(f),
+        }
+    }
 }
 
 impl<T: Clone> Tensor<T> {
@@ -907,5 +930,50 @@ mod tests {
         let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[2, 3]);
         let original_flat = original_shape.ravel_index(&[2, 6]);
         assert_eq!(skipped_flat, original_flat);
+    }
+
+    #[test]
+    fn test_map() {
+        let storage = TensorStorage {
+            data: vec![1, 2, 3, 4, 5],
+        };
+        
+        let mapped_storage = storage.map(|x| x * 2);
+        assert_eq!(mapped_storage.data, vec![2, 4, 6, 8, 10]);
+        
+        let float_storage = storage.map(|x| *x as f32 + 0.5);
+        assert_eq!(float_storage.data, vec![1.5, 2.5, 3.5, 4.5, 5.5]);
+        
+        let mut tensor = Tensor::<i32>::zeros(vec![2, 3]);
+        tensor[&[0, 0]] = 1;
+        tensor[&[0, 1]] = 2;
+        tensor[&[0, 2]] = 3;
+        tensor[&[1, 0]] = 4;
+        tensor[&[1, 1]] = 5;
+        tensor[&[1, 2]] = 6;
+        
+        let mapped_tensor = tensor.map(|x| x * x);
+        
+        assert_eq!(mapped_tensor.shape.shape, vec![2, 3]);
+        assert_eq!(mapped_tensor.shape.strides, vec![3, 1]);
+        
+        assert_eq!(mapped_tensor[&[0, 0]], 1);   // 1 * 1
+        assert_eq!(mapped_tensor[&[0, 1]], 4);   // 2 * 2
+        assert_eq!(mapped_tensor[&[0, 2]], 9);   // 3 * 3
+        assert_eq!(mapped_tensor[&[1, 0]], 16);  // 4 * 4
+        assert_eq!(mapped_tensor[&[1, 1]], 25);  // 5 * 5
+        assert_eq!(mapped_tensor[&[1, 2]], 36);  // 6 * 6
+        
+        let string_tensor = tensor.map(|x| format!("value_{}", x));
+        assert_eq!(string_tensor[&[0, 0]], "value_1");
+        assert_eq!(string_tensor[&[1, 2]], "value_6");
+        
+        let bool_tensor = tensor.map(|x| *x > 3);
+        assert_eq!(bool_tensor[&[0, 0]], false); // 1 > 3
+        assert_eq!(bool_tensor[&[0, 1]], false); // 2 > 3
+        assert_eq!(bool_tensor[&[0, 2]], false); // 3 > 3
+        assert_eq!(bool_tensor[&[1, 0]], true);  // 4 > 3
+        assert_eq!(bool_tensor[&[1, 1]], true);  // 5 > 3
+        assert_eq!(bool_tensor[&[1, 2]], true);  // 6 > 3
     }
 }
