@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    ops::{Div, Index, IndexMut, RangeInclusive},
-};
+use std::ops::{Index, IndexMut, RangeInclusive};
 
 use num_traits::Zero;
 
@@ -27,6 +24,10 @@ impl TensorShape {
 
     fn size(&self) -> usize {
         self.shape.iter().product()
+    }
+
+    fn is_scalar(&self) -> bool {
+        self.shape.is_empty()
     }
 
     fn ravel_index(&self, indices: &[usize]) -> usize {
@@ -210,6 +211,12 @@ impl TensorShape {
     }
 }
 
+impl From<&[usize]> for TensorShape {
+    fn from(shape: &[usize]) -> Self {
+        TensorShape::new(shape.to_vec())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct TensorStorage<T> {
     data: Vec<T>,
@@ -218,11 +225,27 @@ struct TensorStorage<T> {
 impl<T> TensorStorage<T> {
     fn map<F, U>(&self, f: F) -> TensorStorage<U>
     where
-        F: Fn(&T) -> U
+        F: Fn(&T) -> U,
     {
         TensorStorage {
             data: self.data.iter().map(f).collect(),
         }
+    }
+}
+
+impl<T: Clone> TensorStorage<T> {
+    fn reduce_all<F>(&self, f: F) -> TensorStorage<T>
+    where
+        F: Fn(&T, &T) -> T,
+        T: Clone,
+    {
+        let v = self
+            .data
+            .iter()
+            .cloned()
+            .reduce(|a, b| f(&a, &b))
+            .expect("Cannot reduce an empty tensor storage");
+        TensorStorage { data: vec![v] }
     }
 }
 
@@ -308,6 +331,66 @@ impl<T: Zero + Clone> Tensor<T> {
         let shape = TensorShape::new(shape);
         let storage = TensorStorage::<T>::zeros(shape.size());
         Tensor { shape, storage }
+    }
+
+    fn reduce<F>(&self, dim: usize, f: F) -> Tensor<T>
+    where
+        F: Fn(&T, &T) -> T,
+    {
+        if dim >= self.shape.shape.len() {
+            panic!(
+                "dim {} out of bounds for tensor with {} dimensions",
+                dim,
+                self.shape.shape.len()
+            );
+        }
+
+        let mut result_shape = self.shape.shape.clone();
+        result_shape.remove(dim);
+        let result_tensor_shape: TensorShape = result_shape.as_slice().into();
+
+        if result_tensor_shape.is_scalar() {
+            return Tensor {
+                shape: result_tensor_shape,
+                storage: self.storage.reduce_all(f),
+            };
+        }
+
+        let mut result_storage: TensorStorage<T> = TensorStorage::zeros(result_tensor_shape.size());
+
+        // Initialize the result with the first slice along the reduction dimension
+        let total_elements = self.shape.size();
+        for flat_idx in 0..total_elements {
+            let mut multi_idx = self.shape.unravel_index(flat_idx);
+            
+            // Only process elements where the reduction dimension index is 0
+            if multi_idx[dim] == 0 {
+                multi_idx.remove(dim);
+                let result_flat_idx = result_tensor_shape.ravel_index(&multi_idx);
+                result_storage[result_flat_idx] = self.storage[self.shape.linear_offset + flat_idx].clone();
+            }
+        }
+
+        // Now reduce the remaining slices (dim index > 0) into the initialized result
+        for flat_idx in 0..total_elements {
+            let mut multi_idx = self.shape.unravel_index(flat_idx);
+            
+            // Only process elements where the reduction dimension index is > 0
+            if multi_idx[dim] > 0 {
+                multi_idx.remove(dim);
+                let result_flat_idx = result_tensor_shape.ravel_index(&multi_idx);
+
+                result_storage[result_flat_idx] = f(
+                    &result_storage[result_flat_idx],
+                    &self.storage[self.shape.linear_offset + flat_idx],
+                );
+            }
+        }
+
+        Tensor {
+            shape: result_tensor_shape,
+            storage: result_storage,
+        }
     }
 }
 
@@ -937,13 +1020,13 @@ mod tests {
         let storage = TensorStorage {
             data: vec![1, 2, 3, 4, 5],
         };
-        
+
         let mapped_storage = storage.map(|x| x * 2);
         assert_eq!(mapped_storage.data, vec![2, 4, 6, 8, 10]);
-        
+
         let float_storage = storage.map(|x| *x as f32 + 0.5);
         assert_eq!(float_storage.data, vec![1.5, 2.5, 3.5, 4.5, 5.5]);
-        
+
         let mut tensor = Tensor::<i32>::zeros(vec![2, 3]);
         tensor[&[0, 0]] = 1;
         tensor[&[0, 1]] = 2;
@@ -951,29 +1034,158 @@ mod tests {
         tensor[&[1, 0]] = 4;
         tensor[&[1, 1]] = 5;
         tensor[&[1, 2]] = 6;
-        
+
         let mapped_tensor = tensor.map(|x| x * x);
-        
+
         assert_eq!(mapped_tensor.shape.shape, vec![2, 3]);
         assert_eq!(mapped_tensor.shape.strides, vec![3, 1]);
-        
-        assert_eq!(mapped_tensor[&[0, 0]], 1);   // 1 * 1
-        assert_eq!(mapped_tensor[&[0, 1]], 4);   // 2 * 2
-        assert_eq!(mapped_tensor[&[0, 2]], 9);   // 3 * 3
-        assert_eq!(mapped_tensor[&[1, 0]], 16);  // 4 * 4
-        assert_eq!(mapped_tensor[&[1, 1]], 25);  // 5 * 5
-        assert_eq!(mapped_tensor[&[1, 2]], 36);  // 6 * 6
-        
+
+        assert_eq!(mapped_tensor[&[0, 0]], 1); // 1 * 1
+        assert_eq!(mapped_tensor[&[0, 1]], 4); // 2 * 2
+        assert_eq!(mapped_tensor[&[0, 2]], 9); // 3 * 3
+        assert_eq!(mapped_tensor[&[1, 0]], 16); // 4 * 4
+        assert_eq!(mapped_tensor[&[1, 1]], 25); // 5 * 5
+        assert_eq!(mapped_tensor[&[1, 2]], 36); // 6 * 6
+
         let string_tensor = tensor.map(|x| format!("value_{}", x));
         assert_eq!(string_tensor[&[0, 0]], "value_1");
         assert_eq!(string_tensor[&[1, 2]], "value_6");
-        
+
         let bool_tensor = tensor.map(|x| *x > 3);
         assert_eq!(bool_tensor[&[0, 0]], false); // 1 > 3
         assert_eq!(bool_tensor[&[0, 1]], false); // 2 > 3
         assert_eq!(bool_tensor[&[0, 2]], false); // 3 > 3
-        assert_eq!(bool_tensor[&[1, 0]], true);  // 4 > 3
-        assert_eq!(bool_tensor[&[1, 1]], true);  // 5 > 3
-        assert_eq!(bool_tensor[&[1, 2]], true);  // 6 > 3
+        assert_eq!(bool_tensor[&[1, 0]], true); // 4 > 3
+        assert_eq!(bool_tensor[&[1, 1]], true); // 5 > 3
+        assert_eq!(bool_tensor[&[1, 2]], true); // 6 > 3
+    }
+
+    #[test]
+    fn test_reduce() {
+        // Test reducing a 1D tensor (should result in scalar)
+        let mut tensor_1d = Tensor::<i32>::zeros(vec![5]);
+        tensor_1d[&[0]] = 1;
+        tensor_1d[&[1]] = 2;
+        tensor_1d[&[2]] = 3;
+        tensor_1d[&[3]] = 4;
+        tensor_1d[&[4]] = 5;
+
+        let sum_1d = tensor_1d.reduce(0, |a, b| a + b);
+        assert_eq!(sum_1d.shape.shape, vec![]); // scalar
+        assert_eq!(sum_1d.shape.is_scalar(), true);
+        assert_eq!(sum_1d.storage.data, vec![15]); // 1+2+3+4+5 = 15
+
+        let max_1d = tensor_1d.reduce(0, |a, b| if a > b { *a } else { *b });
+        assert_eq!(max_1d.shape.shape, vec![]);
+        assert_eq!(max_1d.storage.data, vec![5]);
+
+        // Test reducing a 2D tensor along dimension 0 (rows)
+        let mut tensor_2d = Tensor::<i32>::zeros(vec![3, 4]);
+        // Fill with values: row 0: [1,2,3,4], row 1: [5,6,7,8], row 2: [9,10,11,12]
+        for i in 0..3 {
+            for j in 0..4 {
+                tensor_2d[&[i, j]] = (i * 4 + j + 1) as i32;
+            }
+        }
+
+        let sum_rows = tensor_2d.reduce(0, |a, b| a + b);
+        assert_eq!(sum_rows.shape.shape, vec![4]); // result has shape [4]
+        assert_eq!(sum_rows[&[0]], 15); // 1+5+9 = 15
+        assert_eq!(sum_rows[&[1]], 18); // 2+6+10 = 18
+        assert_eq!(sum_rows[&[2]], 21); // 3+7+11 = 21
+        assert_eq!(sum_rows[&[3]], 24); // 4+8+12 = 24
+
+        // Test reducing the same 2D tensor along dimension 1 (columns)
+        let sum_cols = tensor_2d.reduce(1, |a, b| a + b);
+        assert_eq!(sum_cols.shape.shape, vec![3]); // result has shape [3]
+        assert_eq!(sum_cols[&[0]], 10); // 1+2+3+4 = 10
+        assert_eq!(sum_cols[&[1]], 26); // 5+6+7+8 = 26
+        assert_eq!(sum_cols[&[2]], 42); // 9+10+11+12 = 42
+
+        // Test reducing a 3D tensor
+        let mut tensor_3d = Tensor::<f32>::zeros(vec![2, 3, 4]);
+        let mut value = 1.0;
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    tensor_3d[&[i, j, k]] = value;
+                    value += 1.0;
+                }
+            }
+        }
+
+        // Reduce along dimension 0 (should result in shape [3, 4])
+        let reduced_dim0 = tensor_3d.reduce(0, |a, b| a + b);
+        assert_eq!(reduced_dim0.shape.shape, vec![3, 4]);
+        // First slice [0,:,:] has values 1-12, second slice [1,:,:] has values 13-24
+        assert_eq!(reduced_dim0[&[0, 0]], 14.0); // 1.0 + 13.0
+        assert_eq!(reduced_dim0[&[0, 1]], 16.0); // 2.0 + 14.0
+        assert_eq!(reduced_dim0[&[2, 3]], 36.0); // 12.0 + 24.0
+
+        // Reduce along dimension 1 (should result in shape [2, 4])
+        let reduced_dim1 = tensor_3d.reduce(1, |a, b| a + b);
+        assert_eq!(reduced_dim1.shape.shape, vec![2, 4]);
+        // Sum along the middle dimension
+        assert_eq!(reduced_dim1[&[0, 0]], 15.0); // 1.0 + 5.0 + 9.0
+        assert_eq!(reduced_dim1[&[0, 3]], 24.0); // 4.0 + 8.0 + 12.0
+        assert_eq!(reduced_dim1[&[1, 0]], 51.0); // 13.0 + 17.0 + 21.0
+
+        // Reduce along dimension 2 (should result in shape [2, 3])
+        let reduced_dim2 = tensor_3d.reduce(2, |a, b| a + b);
+        assert_eq!(reduced_dim2.shape.shape, vec![2, 3]);
+        assert_eq!(reduced_dim2[&[0, 0]], 10.0); // 1.0 + 2.0 + 3.0 + 4.0
+        assert_eq!(reduced_dim2[&[0, 1]], 26.0); // 5.0 + 6.0 + 7.0 + 8.0
+        assert_eq!(reduced_dim2[&[1, 2]], 90.0); // 21.0 + 22.0 + 23.0 + 24.0
+
+        // Test with different reduction functions
+        let mut small_tensor = Tensor::<i32>::zeros(vec![2, 3]);
+        small_tensor[&[0, 0]] = 5;
+        small_tensor[&[0, 1]] = 2;
+        small_tensor[&[0, 2]] = 8;
+        small_tensor[&[1, 0]] = 1;
+        small_tensor[&[1, 1]] = 9;
+        small_tensor[&[1, 2]] = 3;
+
+        // Test max reduction
+        let max_reduction = small_tensor.reduce(0, |a, b| if a > b { *a } else { *b });
+        assert_eq!(max_reduction.shape.shape, vec![3]);
+        assert_eq!(max_reduction[&[0]], 5); // max(5, 1)
+        assert_eq!(max_reduction[&[1]], 9); // max(2, 9)
+        assert_eq!(max_reduction[&[2]], 8); // max(8, 3)
+
+        // Test min reduction
+        let min_reduction = small_tensor.reduce(1, |a, b| if a < b { *a } else { *b });
+        assert_eq!(min_reduction.shape.shape, vec![2]);
+        assert_eq!(min_reduction[&[0]], 2); // min(5, 2, 8)
+        assert_eq!(min_reduction[&[1]], 1); // min(1, 9, 3)
+
+        // Test product reduction
+        let product_reduction = small_tensor.reduce(0, |a, b| a * b);
+        assert_eq!(product_reduction[&[0]], 5); // 5 * 1
+        assert_eq!(product_reduction[&[1]], 18); // 2 * 9
+        assert_eq!(product_reduction[&[2]], 24); // 8 * 3
+
+        // Test edge case: single element tensor
+        let mut single_tensor = Tensor::<i32>::zeros(vec![1]);
+        single_tensor.storage.data[0] = 42;
+        let single_reduced = single_tensor.reduce(0, |a, b| a + b);
+        assert_eq!(single_reduced.shape.shape, vec![]);
+        assert_eq!(single_reduced.storage.data, vec![42]);
+
+        // Test edge case: tensor with dimension of size 1
+        let mut narrow_tensor = Tensor::<i32>::zeros(vec![1, 5]);
+        for j in 0..5 {
+            narrow_tensor[&[0, j]] = j as i32 + 1;
+        }
+        
+        let reduced_narrow = narrow_tensor.reduce(0, |a, b| a + b);
+        assert_eq!(reduced_narrow.shape.shape, vec![5]);
+        for j in 0..5 {
+            assert_eq!(reduced_narrow[&[j]], (j as i32) + 1);
+        }
+
+        let reduced_narrow2 = narrow_tensor.reduce(1, |a, b| a + b);
+        assert_eq!(reduced_narrow2.shape.shape, vec![1]);
+        assert_eq!(reduced_narrow2[&[0]], 15); // 1+2+3+4+5
     }
 }
