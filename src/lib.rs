@@ -392,6 +392,107 @@ impl<T: Zero + Clone> Tensor<T> {
             storage: result_storage,
         }
     }
+
+    fn broadcast_op<F, U, T2>(&self, other: &Tensor<T2>, corresponding_dimensions: &[(usize, usize)], f: F) -> Tensor<U>
+    where
+        F: Fn(&T, &T2) -> U,
+        U: Zero + Clone,
+    {
+        // Create mapping for corresponding dimensions
+        let mut dim_correspondence = std::collections::HashMap::new();
+        let mut other_dim_used = vec![false; other.shape.shape.len()];
+        
+        for &(self_dim, other_dim) in corresponding_dimensions {
+            if self_dim >= self.shape.shape.len() || other_dim >= other.shape.shape.len() {
+                panic!("Dimension index out of bounds");
+            }
+            dim_correspondence.insert(self_dim, other_dim);
+            other_dim_used[other_dim] = true;
+        }
+        
+        // Build output shape: LHS dimensions (with broadcasting) + remaining RHS dimensions
+        let mut output_shape = Vec::new();
+        
+        // Process LHS dimensions in order
+        for (self_dim, &self_size) in self.shape.shape.iter().enumerate() {
+            if let Some(&other_dim) = dim_correspondence.get(&self_dim) {
+                let other_size = other.shape.shape[other_dim];
+                
+                if self_size == other_size {
+                    output_shape.push(self_size);
+                } else if self_size == 1 {
+                    output_shape.push(other_size);
+                } else if other_size == 1 {
+                    output_shape.push(self_size);
+                } else {
+                    panic!("Cannot broadcast dimensions: {} and {}", self_size, other_size);
+                }
+            } else {
+                output_shape.push(self_size);
+            }
+        }
+        
+        // Add remaining RHS dimensions that weren't used in correspondence
+        for (other_dim, &other_size) in other.shape.shape.iter().enumerate() {
+            if !other_dim_used[other_dim] {
+                output_shape.push(other_size);
+            }
+        }
+        
+        let output_tensor_shape = TensorShape::new(output_shape);
+        let mut result = Tensor::<U>::zeros(output_tensor_shape.shape.clone());
+        
+        // Perform the element-wise operation
+        for flat_idx in 0..output_tensor_shape.size() {
+            let output_multi_idx = output_tensor_shape.unravel_index(flat_idx);
+            
+            // Map output indices to input tensor indices
+            let mut self_idx = vec![0; self.shape.shape.len()];
+            let mut other_idx = vec![0; other.shape.shape.len()];
+            
+            // Map LHS dimensions
+            for (self_dim, &self_size) in self.shape.shape.iter().enumerate() {
+                let output_val = output_multi_idx[self_dim];
+                
+                if let Some(&other_dim) = dim_correspondence.get(&self_dim) {
+                    if self_size == 1 {
+                        self_idx[self_dim] = 0;
+                    } else {
+                        self_idx[self_dim] = output_val;
+                    }
+                    
+                    if other.shape.shape[other_dim] == 1 {
+                        other_idx[other_dim] = 0;
+                    } else {
+                        other_idx[other_dim] = output_val;
+                    }
+                } else {
+                    self_idx[self_dim] = output_val;
+                }
+            }
+            
+            // Map remaining RHS dimensions
+            let mut rhs_output_offset = self.shape.shape.len();
+            for (other_dim, _) in other.shape.shape.iter().enumerate() {
+                if !other_dim_used[other_dim] {
+                    other_idx[other_dim] = output_multi_idx[rhs_output_offset];
+                    rhs_output_offset += 1;
+                }
+            }
+            
+            // Get values from input tensors
+            let self_flat = self.shape.linear_offset + self.shape.ravel_index(&self_idx);
+            let other_flat = other.shape.linear_offset + other.shape.ravel_index(&other_idx);
+            
+            let self_val = &self.storage[self_flat];
+            let other_val = &other.storage[other_flat];
+            
+            // Apply operation and store result
+            result.storage[flat_idx] = f(self_val, other_val);
+        }
+        
+        result
+    }
 }
 
 impl<T> Index<&[usize]> for Tensor<T> {
@@ -1187,5 +1288,134 @@ mod tests {
         let reduced_narrow2 = narrow_tensor.reduce(1, |a, b| a + b);
         assert_eq!(reduced_narrow2.shape.shape, vec![1]);
         assert_eq!(reduced_narrow2[&[0]], 15); // 1+2+3+4+5
+    }
+
+    #[test]
+    fn test_broadcast_op() {
+        // Test basic element-wise addition with same shapes
+        let mut tensor_a = Tensor::<i32>::zeros(vec![2, 3]);
+        let mut tensor_b = Tensor::<i32>::zeros(vec![2, 3]);
+        
+        // Fill tensor_a: [[1, 2, 3], [4, 5, 6]]
+        for i in 0..2 {
+            for j in 0..3 {
+                tensor_a[&[i, j]] = (i * 3 + j + 1) as i32;
+            }
+        }
+        
+        // Fill tensor_b: [[10, 20, 30], [40, 50, 60]]
+        for i in 0..2 {
+            for j in 0..3 {
+                tensor_b[&[i, j]] = ((i * 3 + j + 1) * 10) as i32;
+            }
+        }
+        
+        let result = tensor_a.broadcast_op(&tensor_b, &[(0, 0), (1, 1)], |a, b| a + b);
+        assert_eq!(result.shape.shape, vec![2, 3]);
+        assert_eq!(result[&[0, 0]], 11); // 1 + 10
+        assert_eq!(result[&[0, 1]], 22); // 2 + 20
+        assert_eq!(result[&[1, 2]], 66); // 6 + 60
+        
+        // Test broadcasting with dimension of size 1 - LHS preserving
+        let mut tensor_2d = Tensor::<i32>::zeros(vec![2, 3]);
+        for i in 0..2 {
+            for j in 0..3 {
+                tensor_2d[&[i, j]] = (i * 3 + j + 1) as i32;
+            }
+        }
+        
+        let mut tensor_row = Tensor::<i32>::zeros(vec![1, 3]);
+        tensor_row[&[0, 0]] = 100;
+        tensor_row[&[0, 1]] = 200;
+        tensor_row[&[0, 2]] = 300;
+        
+        // Broadcasting: [2, 3] + [1, 3] -> [2, 3] (LHS shape preserved)
+        let broadcast_result = tensor_2d.broadcast_op(&tensor_row, &[(0, 0), (1, 1)], |a, b| a + b);
+        assert_eq!(broadcast_result.shape.shape, vec![2, 3]);
+        assert_eq!(broadcast_result[&[0, 0]], 101); // 1 + 100
+        assert_eq!(broadcast_result[&[0, 1]], 202); // 2 + 200
+        assert_eq!(broadcast_result[&[0, 2]], 303); // 3 + 300
+        assert_eq!(broadcast_result[&[1, 0]], 104); // 4 + 100 (row broadcasts)
+        assert_eq!(broadcast_result[&[1, 1]], 205); // 5 + 200
+        assert_eq!(broadcast_result[&[1, 2]], 306); // 6 + 300
+        
+        // Test broadcasting in the other direction
+        let mut tensor_col = Tensor::<i32>::zeros(vec![2, 1]);
+        tensor_col[&[0, 0]] = 1000;
+        tensor_col[&[1, 0]] = 2000;
+        
+        let col_broadcast_result = tensor_2d.broadcast_op(&tensor_col, &[(0, 0), (1, 1)], |a, b| a + b);
+        assert_eq!(col_broadcast_result.shape.shape, vec![2, 3]); // LHS shape preserved
+        assert_eq!(col_broadcast_result[&[0, 0]], 1001); // 1 + 1000
+        assert_eq!(col_broadcast_result[&[0, 1]], 1002); // 2 + 1000 (col broadcasts)
+        assert_eq!(col_broadcast_result[&[0, 2]], 1003); // 3 + 1000
+        assert_eq!(col_broadcast_result[&[1, 0]], 2004); // 4 + 2000
+        assert_eq!(col_broadcast_result[&[1, 1]], 2005); // 5 + 2000
+        assert_eq!(col_broadcast_result[&[1, 2]], 2006); // 6 + 2000
+        
+        // Test with different operation (multiplication)
+        let mult_result = tensor_2d.broadcast_op(&tensor_row, &[(0, 0), (1, 1)], |a, b| a * b);
+        assert_eq!(mult_result.shape.shape, vec![2, 3]); // LHS shape preserved
+        assert_eq!(mult_result[&[0, 0]], 100); // 1 * 100
+        assert_eq!(mult_result[&[0, 1]], 400); // 2 * 200
+        assert_eq!(mult_result[&[0, 2]], 900); // 3 * 300
+        assert_eq!(mult_result[&[1, 0]], 400); // 4 * 100
+        assert_eq!(mult_result[&[1, 1]], 1000); // 5 * 200
+        assert_eq!(mult_result[&[1, 2]], 1800); // 6 * 300
+        
+        // Test with tensors that have additional non-corresponding dimensions
+        let mut tensor_3d = Tensor::<i32>::zeros(vec![2, 3, 4]);
+        let mut tensor_1d = Tensor::<i32>::zeros(vec![3]);
+        
+        for i in 0..3 {
+            tensor_1d[&[i]] = (i + 1) as i32;
+        }
+        
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    tensor_3d[&[i, j, k]] = (i * 12 + j * 4 + k + 1) as i32;
+                }
+            }
+        }
+        
+        // Match dimension 1 of 3D tensor with dimension 0 of 1D tensor
+        // LHS shape [2, 3, 4] preserved, so output is [2, 3, 4]
+        let mixed_result = tensor_3d.broadcast_op(&tensor_1d, &[(1, 0)], |a, b| a + b);
+        assert_eq!(mixed_result.shape.shape, vec![2, 3, 4]); // LHS shape preserved
+        
+        // Check a few values - tensor_1d[0]=1, tensor_1d[1]=2, tensor_1d[2]=3
+        assert_eq!(mixed_result[&[0, 0, 0]], 2); // 1 + 1
+        assert_eq!(mixed_result[&[0, 1, 0]], 7); // 5 + 2
+        assert_eq!(mixed_result[&[0, 2, 0]], 12); // 9 + 3
+        assert_eq!(mixed_result[&[1, 0, 3]], 17); // 16 + 1
+        
+        // Test LHS with non-corresponding dimensions + RHS dimensions
+        let mut tensor_2x4 = Tensor::<i32>::zeros(vec![2, 4]);
+        let mut tensor_3x5 = Tensor::<i32>::zeros(vec![3, 5]);
+        
+        for i in 0..2 {
+            for j in 0..4 {
+                tensor_2x4[&[i, j]] = (i * 4 + j + 1) as i32;
+            }
+        }
+        
+        for i in 0..3 {
+            for j in 0..5 {
+                tensor_3x5[&[i, j]] = ((i * 5 + j + 1) * 10) as i32;
+            }
+        }
+        
+        // Only match one dimension, others get appended
+        // [2, 4] + [3, 5] with correspondence [(1, 1)] should give [2, 4, 3] (LHS preserved + remaining RHS)
+        let mixed_dims_result = tensor_2x4.broadcast_op(&tensor_3x5, &[], |a, b| a + b);
+        assert_eq!(mixed_dims_result.shape.shape, vec![2, 4, 3, 5]); // [2, 4] from LHS, [3] from remaining RHS
+        
+        // Test different types
+        let float_tensor = tensor_2d.map(|x| *x as f32);
+        let int_to_float_result = tensor_2d.broadcast_op(&float_tensor, &[(0, 0), (1, 1)], |a, b| (*a as f32) + b);
+        assert_eq!(int_to_float_result.shape.shape, vec![2, 3]); // LHS shape preserved
+        assert_eq!(int_to_float_result[&[0, 0]], 2.0); // 1 + 1.0
+        assert_eq!(int_to_float_result[&[1, 2]], 12.0); // 6 + 6.0
     }
 }
