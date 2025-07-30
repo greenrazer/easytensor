@@ -1571,13 +1571,17 @@ mod tests {
     #[test]
     fn test_softmax() {
         let mut tensor_2d = Tensor::<f32>::zeros(vec![2, 3]);
-        tensor_2d[&[0, 0]] = 1.0; tensor_2d[&[0, 1]] = 2.0; tensor_2d[&[0, 2]] = 3.0;
-        tensor_2d[&[1, 0]] = 4.0; tensor_2d[&[1, 1]] = 5.0; tensor_2d[&[1, 2]] = 6.0;
+        tensor_2d[&[0, 0]] = 1.0;
+        tensor_2d[&[0, 1]] = 2.0;
+        tensor_2d[&[0, 2]] = 3.0;
+        tensor_2d[&[1, 0]] = 4.0;
+        tensor_2d[&[1, 1]] = 5.0;
+        tensor_2d[&[1, 2]] = 6.0;
 
         let exp_tensor = tensor_2d.map(|x| x.exp());
         assert_eq!(exp_tensor.shape.shape, vec![2, 3]);
         assert_eq!(exp_tensor[&[0, 0]], 1_f32.exp());
-        assert_eq!(exp_tensor[&[0, 2]],  3_f32.exp());
+        assert_eq!(exp_tensor[&[0, 2]], 3_f32.exp());
 
         let sum_tensor = exp_tensor.reduce(1, |a, b| a + b);
         assert_eq!(sum_tensor.shape.shape, vec![2]);
@@ -1610,12 +1614,12 @@ mod tests {
 
         let softmax_3d = exp_3d.broadcast_op(&sum_3d, &[(0, 0), (1, 1)], |a, b| a / b);
         assert_eq!(softmax_3d.shape.shape, vec![2, 2, 4]);
-        
+
         for i in 0..2 {
             for j in 0..2 {
                 let row_sum: f32 = (0..4).map(|k| softmax_3d[&[i, j, k]]).sum();
                 assert_eq!(row_sum, 1.0);
-                
+
                 for k in 0..4 {
                     let expected = exp_3d[&[i, j, k]] / sum_3d[&[i, j]];
                     assert_eq!(softmax_3d[&[i, j, k]], expected);
