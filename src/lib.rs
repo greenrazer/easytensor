@@ -1485,4 +1485,86 @@ mod tests {
         assert_eq!(int_to_float_result[&[0, 0]], 2.0); // 1 + 1.0
         assert_eq!(int_to_float_result[&[1, 2]], 12.0); // 6 + 6.0
     }
+
+    #[test]
+    fn test_matrix_multiplication() {
+        let mut matrix_a = Tensor::<i32>::zeros(vec![2, 3]);
+        matrix_a[&[0, 0]] = 1;
+        matrix_a[&[0, 1]] = 2;
+        matrix_a[&[0, 2]] = 3;
+        matrix_a[&[1, 0]] = 4;
+        matrix_a[&[1, 1]] = 5;
+        matrix_a[&[1, 2]] = 6;
+
+        let mut matrix_b = Tensor::<i32>::zeros(vec![3, 2]);
+        matrix_b[&[0, 0]] = 7;
+        matrix_b[&[0, 1]] = 8;
+        matrix_b[&[1, 0]] = 9;
+        matrix_b[&[1, 1]] = 10;
+        matrix_b[&[2, 0]] = 11;
+        matrix_b[&[2, 1]] = 12;
+
+        let intermediate = matrix_a.broadcast_op(&matrix_b, &[(1, 0)], |a, b| a * b);
+        assert_eq!(intermediate.shape.shape, vec![2, 3, 2]);
+        assert_eq!(intermediate[&[0, 0, 0]], 7);
+        assert_eq!(intermediate[&[0, 1, 1]], 20);
+        assert_eq!(intermediate[&[1, 2, 0]], 66);
+
+        let result = intermediate.reduce(1, |a, b| a + b);
+        assert_eq!(result.shape.shape, vec![2, 2]);
+        assert_eq!(result[&[0, 0]], 58);
+        assert_eq!(result[&[0, 1]], 64);
+        assert_eq!(result[&[1, 0]], 139);
+        assert_eq!(result[&[1, 1]], 154);
+
+        let mut batch_a = Tensor::<i32>::zeros(vec![2, 3, 4]);
+        let mut batch_b = Tensor::<i32>::zeros(vec![2, 4, 3]);
+
+        for batch in 0..2 {
+            for i in 0..3 {
+                for j in 0..4 {
+                    batch_a[&[batch, i, j]] = ((batch * 12) + (i * 4) + j + 1) as i32;
+                }
+            }
+            for i in 0..4 {
+                for j in 0..3 {
+                    batch_b[&[batch, i, j]] = ((batch * 12) + (i * 3) + j + 13) as i32;
+                }
+            }
+        }
+
+        let batch_intermediate = batch_a.broadcast_op(&batch_b, &[(0, 0), (2, 1)], |a, b| a * b);
+        assert_eq!(batch_intermediate.shape.shape, vec![2, 3, 4, 3]);
+
+        let batch_result = batch_intermediate.reduce(2, |a, b| a + b);
+        assert_eq!(batch_result.shape.shape, vec![2, 3, 3]);
+        assert_eq!(
+            batch_result[&[0, 0, 0]],
+            batch_a[&[0, 0, 0]] * batch_b[&[0, 0, 0]]
+                + batch_a[&[0, 0, 1]] * batch_b[&[0, 1, 0]]
+                + batch_a[&[0, 0, 2]] * batch_b[&[0, 2, 0]]
+                + batch_a[&[0, 0, 3]] * batch_b[&[0, 3, 0]]
+        );
+        assert_eq!(
+            batch_result[&[0, 0, 1]],
+            batch_a[&[0, 0, 0]] * batch_b[&[0, 0, 1]]
+                + batch_a[&[0, 0, 1]] * batch_b[&[0, 1, 1]]
+                + batch_a[&[0, 0, 2]] * batch_b[&[0, 2, 1]]
+                + batch_a[&[0, 0, 3]] * batch_b[&[0, 3, 1]]
+        );
+        assert_eq!(
+            batch_result[&[0, 0, 2]],
+            batch_a[&[0, 0, 0]] * batch_b[&[0, 0, 2]]
+                + batch_a[&[0, 0, 1]] * batch_b[&[0, 1, 2]]
+                + batch_a[&[0, 0, 2]] * batch_b[&[0, 2, 2]]
+                + batch_a[&[0, 0, 3]] * batch_b[&[0, 3, 2]]
+        );
+        assert_eq!(
+            batch_result[&[1, 2, 2]],
+            batch_a[&[1, 2, 0]] * batch_b[&[1, 0, 2]]
+                + batch_a[&[1, 2, 1]] * batch_b[&[1, 1, 2]]
+                + batch_a[&[1, 2, 2]] * batch_b[&[1, 2, 2]]
+                + batch_a[&[1, 2, 3]] * batch_b[&[1, 3, 2]]
+        );
+    }
 }
