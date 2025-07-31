@@ -11,4 +11,4 @@ You can checkout the reference material for an article using it's corresponding 
 | --- | --- |
 | [Part 1, Core Structure and Indexing](https://huggingface.co/blog/KeighBee/tensors-from-scratch-in-rust-p1) | [part-1](https://github.com/greenrazer/easytensor/tree/part-1) |
 | [Part 2, View Operations](https://huggingface.co/blog/KeighBee/tensors-from-scratch-in-rust-p2) | [part-2](https://github.com/greenrazer/easytensor/tree/part-2) |
-| [Part 3, Data Operations](https://huggingface.co/blog/KeighBee/tensors-from-scratch-in-rust-p3) | [part-2](https://github.com/greenrazer/easytensor/tree/part-3) |
+| [Part 3, Data Operations](https://huggingface.co/blog/KeighBee/tensors-from-scratch-in-rust-p3) | [part-3](https://github.com/greenrazer/easytensor/tree/part-3) |
