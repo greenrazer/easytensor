@@ -35,11 +35,12 @@ impl TensorShape {
             panic!("Indices length does not match tensor shape dimensions.");
         }
 
-        indices
-            .iter()
-            .zip(self.strides.iter())
-            .map(|(&idx, &stride)| idx * stride)
-            .sum()
+        self.linear_offset
+            + indices
+                .iter()
+                .zip(self.strides.iter())
+                .map(|(&idx, &stride)| idx * stride)
+                .sum::<usize>()
     }
 
     fn unravel_index(&self, index: usize) -> Vec<usize> {
@@ -330,7 +331,7 @@ impl<T: Clone> TensorStorage<T> {
                     }
                 }
 
-                let source_flat_idx = shape.linear_offset + shape.ravel_index(&full_multi_idx);
+                let source_flat_idx = shape.ravel_index(&full_multi_idx);
                 let value = &self[source_flat_idx];
 
                 accumulated_value = match accumulated_value {
@@ -408,8 +409,8 @@ impl<T: Clone> TensorStorage<T> {
             }
 
             // Get values from input tensors using proper indexing
-            let self_flat = self_shape.linear_offset + self_shape.ravel_index(&self_idx);
-            let other_flat = other_shape.linear_offset + other_shape.ravel_index(&other_idx);
+            let self_flat = self_shape.ravel_index(&self_idx);
+            let other_flat = other_shape.ravel_index(&other_idx);
 
             let self_val = &self[self_flat];
             let other_val = &other[other_flat];
@@ -1082,11 +1083,11 @@ mod tests {
         let original_shape = TensorShape::new(vec![4, 6]);
         let sliced_test = original_shape.slice(0, 1..=2).slice(1, 2..=4);
 
-        let sliced_flat = sliced_test.linear_offset + sliced_test.ravel_index(&[0, 0]);
+        let sliced_flat = sliced_test.ravel_index(&[0, 0]);
         let original_flat = original_shape.ravel_index(&[1, 2]);
         assert_eq!(sliced_flat, original_flat);
 
-        let sliced_flat = sliced_test.linear_offset + sliced_test.ravel_index(&[1, 2]);
+        let sliced_flat = sliced_test.ravel_index(&[1, 2]);
         let original_flat = original_shape.ravel_index(&[2, 4]);
         assert_eq!(sliced_flat, original_flat);
     }
@@ -1168,15 +1169,15 @@ mod tests {
         assert_eq!(skipped_shape.shape, vec![6, 4]);
         assert_eq!(skipped_shape.strides, vec![8, 2]);
 
-        let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[1, 2]);
+        let skipped_flat = skipped_shape.ravel_index(&[1, 2]);
         let original_flat = original_shape.ravel_index(&[1, 4]);
         assert_eq!(skipped_flat, original_flat);
 
-        let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[0, 1]);
+        let skipped_flat = skipped_shape.ravel_index(&[0, 1]);
         let original_flat = original_shape.ravel_index(&[0, 2]);
         assert_eq!(skipped_flat, original_flat);
 
-        let skipped_flat = skipped_shape.linear_offset + skipped_shape.ravel_index(&[2, 3]);
+        let skipped_flat = skipped_shape.ravel_index(&[2, 3]);
         let original_flat = original_shape.ravel_index(&[2, 6]);
         assert_eq!(skipped_flat, original_flat);
     }
@@ -1353,6 +1354,126 @@ mod tests {
         let reduced_narrow2 = narrow_tensor.reduce(1, |a, b| a + b);
         assert_eq!(reduced_narrow2.shape.shape, vec![1]);
         assert_eq!(reduced_narrow2[&[0]], 15); // 1+2+3+4+5
+
+        // Test reduction on a permuted tensor
+        let mut tensor_for_permute = Tensor::<i32>::zeros(vec![2, 3, 4]);
+        let mut value = 1;
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    tensor_for_permute[&[i, j, k]] = value;
+                    value += 1;
+                }
+            }
+        }
+
+        // Permute dimensions: [2, 3, 4] -> [4, 2, 3] (dims [2, 0, 1])
+        let permuted_tensor = tensor_for_permute.permute(&[2, 0, 1]);
+        assert_eq!(permuted_tensor.shape.shape, vec![4, 2, 3]);
+
+        // Verify some values are correct after permutation
+        assert_eq!(permuted_tensor[&[0, 0, 0]], tensor_for_permute[&[0, 0, 0]]); // value 1
+        assert_eq!(permuted_tensor[&[1, 0, 0]], tensor_for_permute[&[0, 0, 1]]); // value 2
+        assert_eq!(permuted_tensor[&[0, 1, 0]], tensor_for_permute[&[1, 0, 0]]); // value 13
+
+        // Reduce the permuted tensor along dimension 1 (original dimension 0)
+        let permuted_reduced = permuted_tensor.reduce(1, |a, b| a + b);
+        assert_eq!(permuted_reduced.shape.shape, vec![4, 3]);
+
+        // Check that reduction works correctly with permuted strides
+        assert_eq!(permuted_reduced[&[0, 0]], 1 + 13); // values at [0,0,0] + [1,0,0] in original
+        assert_eq!(permuted_reduced[&[1, 0]], 2 + 14); // values at [0,0,1] + [1,0,1] in original
+        assert_eq!(permuted_reduced[&[3, 2]], 12 + 24); // values at [0,2,3] + [1,2,3] in original
+
+        // Test reduction on a sliced tensor
+        let mut tensor_for_slice = Tensor::<i32>::zeros(vec![4, 5]);
+        for i in 0..4 {
+            for j in 0..5 {
+                tensor_for_slice[&[i, j]] = (i * 5 + j + 1) as i32;
+            }
+        }
+
+        // Slice to get middle 2x3 portion: rows 1-2, cols 1-3
+        let sliced_tensor = tensor_for_slice.slice(0, 1..=2).slice(1, 1..=3);
+        assert_eq!(sliced_tensor.shape.shape, vec![2, 3]);
+
+        // Verify slice values
+        assert_eq!(sliced_tensor[&[0, 0]], tensor_for_slice[&[1, 1]]); // 7
+        assert_eq!(sliced_tensor[&[1, 2]], tensor_for_slice[&[2, 3]]); // 14
+
+        // Reduce the sliced tensor along dimension 0
+        let sliced_reduced = sliced_tensor.reduce(0, |a, b| a + b);
+        assert_eq!(sliced_reduced.shape.shape, vec![3]);
+        assert_eq!(
+            sliced_reduced[&[0]],
+            tensor_for_slice[&[1, 1]] + tensor_for_slice[&[2, 1]]
+        );
+        assert_eq!(
+            sliced_reduced[&[1]],
+            tensor_for_slice[&[1, 2]] + tensor_for_slice[&[2, 2]]
+        );
+        assert_eq!(
+            sliced_reduced[&[2]],
+            tensor_for_slice[&[1, 3]] + tensor_for_slice[&[2, 3]]
+        );
+
+        // Test reduction on a tensor with skip (non-contiguous strides)
+        let mut tensor_for_skip = Tensor::<i32>::zeros(vec![6, 8]);
+        for i in 0..6 {
+            for j in 0..8 {
+                tensor_for_skip[&[i, j]] = (i * 8 + j + 1) as i32;
+            }
+        }
+
+        // Skip every other element in both dimensions
+        let skipped_tensor = tensor_for_skip.skip(0, 2).skip(1, 2);
+        assert_eq!(skipped_tensor.shape.shape, vec![3, 4]); // 6/2 = 3, 8/2 = 4
+
+        // Verify skip values (should access every other row/col)
+        assert_eq!(skipped_tensor[&[0, 0]], tensor_for_skip[&[0, 0]]); // 1
+        assert_eq!(skipped_tensor[&[0, 1]], tensor_for_skip[&[0, 2]]); // 3
+        assert_eq!(skipped_tensor[&[1, 0]], tensor_for_skip[&[2, 0]]); // 17
+        assert_eq!(skipped_tensor[&[2, 3]], tensor_for_skip[&[4, 6]]); // 39
+
+        // Reduce the skipped tensor along dimension 1
+        let skip_reduced = skipped_tensor.reduce(1, |a, b| a + b);
+        assert_eq!(skip_reduced.shape.shape, vec![3]);
+        assert_eq!(skip_reduced[&[0]], 1 + 3 + 5 + 7); // row 0, cols 0,2,4,6
+        assert_eq!(skip_reduced[&[1]], 17 + 19 + 21 + 23); // row 2, cols 0,2,4,6
+        assert_eq!(skip_reduced[&[2]], 33 + 35 + 37 + 39); // row 4, cols 0,2,4,6
+
+        // Test complex combination: permute + slice + reduce
+        let mut complex_tensor = Tensor::<i32>::zeros(vec![3, 4, 5]);
+        let mut val = 1;
+        for i in 0..3 {
+            for j in 0..4 {
+                for k in 0..5 {
+                    complex_tensor[&[i, j, k]] = val;
+                    val += 1;
+                }
+            }
+        }
+
+        // First permute [3,4,5] -> [5,3,4] (dims [2,0,1])
+        let complex_permuted = complex_tensor.permute(&[2, 0, 1]);
+        assert_eq!(complex_permuted.shape.shape, vec![5, 3, 4]);
+
+        // Then slice the first dimension to get [3,3,4] (indices 1..=3 of the 5)
+        let complex_sliced = complex_permuted.slice(0, 1..=3);
+        assert_eq!(complex_sliced.shape.shape, vec![3, 3, 4]);
+
+        // Verify complex transformation worked
+        // complex_sliced[0,0,0] should be complex_tensor[0,0,1] (since we permuted then sliced)
+        assert_eq!(complex_sliced[&[0, 0, 0]], complex_tensor[&[0, 0, 1]]);
+        assert_eq!(complex_sliced[&[1, 1, 2]], complex_tensor[&[1, 2, 2]]);
+
+        // Finally reduce along dimension 2
+        let complex_reduced = complex_sliced.reduce(2, |a, b| a + b);
+        assert_eq!(complex_reduced.shape.shape, vec![3, 3]);
+
+        // Verify the reduction worked correctly
+        let expected_00 = 2 + 7 + 12 + 17; // sum of complex_tensor values at [0,0,1], [0,1,1], [0,2,1], [0,3,1]
+        assert_eq!(complex_reduced[&[0, 0]], expected_00);
     }
 
     #[test]
@@ -1445,16 +1566,13 @@ mod tests {
             }
         }
 
-        // Match dimension 1 of 3D tensor with dimension 0 of 1D tensor
-        // LHS shape [2, 3, 4] preserved, so output is [2, 3, 4]
         let mixed_result = tensor_3d.broadcast_op(&tensor_1d, &[(1, 0)], |a, b| a + b);
-        assert_eq!(mixed_result.shape.shape, vec![2, 3, 4]); // LHS shape preserved
+        assert_eq!(mixed_result.shape.shape, vec![2, 3, 4]);
 
-        // Check a few values - tensor_1d[0]=1, tensor_1d[1]=2, tensor_1d[2]=3
-        assert_eq!(mixed_result[&[0, 0, 0]], 2); // 1 + 1
-        assert_eq!(mixed_result[&[0, 1, 0]], 7); // 5 + 2
-        assert_eq!(mixed_result[&[0, 2, 0]], 12); // 9 + 3
-        assert_eq!(mixed_result[&[1, 0, 3]], 17); // 16 + 1
+        assert_eq!(mixed_result[&[0, 0, 0]], 2);
+        assert_eq!(mixed_result[&[0, 1, 0]], 7);
+        assert_eq!(mixed_result[&[0, 2, 0]], 12);
+        assert_eq!(mixed_result[&[1, 0, 3]], 17);
 
         // Test LHS with non-corresponding dimensions + RHS dimensions
         let mut tensor_2x4 = Tensor::<i32>::zeros(vec![2, 4]);
@@ -1472,18 +1590,185 @@ mod tests {
             }
         }
 
-        // Only match one dimension, others get appended
-        // [2, 4] + [3, 5] with correspondence [(1, 1)] should give [2, 4, 3] (LHS preserved + remaining RHS)
         let mixed_dims_result = tensor_2x4.broadcast_op(&tensor_3x5, &[], |a, b| a + b);
-        assert_eq!(mixed_dims_result.shape.shape, vec![2, 4, 3, 5]); // [2, 4] from LHS, [3] from remaining RHS
+        assert_eq!(mixed_dims_result.shape.shape, vec![2, 4, 3, 5]);
 
-        // Test different types
         let float_tensor = tensor_2d.map(|x| *x as f32);
         let int_to_float_result =
             tensor_2d.broadcast_op(&float_tensor, &[(0, 0), (1, 1)], |a, b| (*a as f32) + b);
-        assert_eq!(int_to_float_result.shape.shape, vec![2, 3]); // LHS shape preserved
-        assert_eq!(int_to_float_result[&[0, 0]], 2.0); // 1 + 1.0
-        assert_eq!(int_to_float_result[&[1, 2]], 12.0); // 6 + 6.0
+        assert_eq!(int_to_float_result.shape.shape, vec![2, 3]);
+        assert_eq!(int_to_float_result[&[0, 0]], 2.0);
+        assert_eq!(int_to_float_result[&[1, 2]], 12.0);
+
+        // Test broadcast_op with permuted tensors
+        let mut base_tensor = Tensor::<i32>::zeros(vec![2, 3, 4]);
+        let mut counter = 1;
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    base_tensor[&[i, j, k]] = counter;
+                    counter += 1;
+                }
+            }
+        }
+
+        // Create a permuted version: [2,3,4] -> [4,2,3]
+        let permuted_tensor = base_tensor.permute(&[2, 0, 1]);
+        assert_eq!(permuted_tensor.shape.shape, vec![4, 2, 3]);
+
+        // Create a 1D tensor to broadcast with
+        let mut broadcast_1d = Tensor::<i32>::zeros(vec![2]);
+        broadcast_1d[&[0]] = 100;
+        broadcast_1d[&[1]] = 200;
+
+        // Broadcast permuted[4,2,3] with 1d[2], matching dim 1 of permuted with dim 0 of 1d
+        let permuted_broadcast =
+            permuted_tensor.broadcast_op(&broadcast_1d, &[(1, 0)], |a, b| a + b);
+        assert_eq!(permuted_broadcast.shape.shape, vec![4, 2, 3]); // LHS shape preserved
+
+        // Verify values: permuted_tensor[k,i,j] + broadcast_1d[i]
+        assert_eq!(
+            permuted_broadcast[&[0, 0, 0]],
+            base_tensor[&[0, 0, 0]] + 100
+        ); // 1 + 100 = 101
+        assert_eq!(
+            permuted_broadcast[&[0, 1, 0]],
+            base_tensor[&[1, 0, 0]] + 200
+        ); // 13 + 200 = 213
+        assert_eq!(
+            permuted_broadcast[&[1, 0, 1]],
+            base_tensor[&[0, 1, 1]] + 100
+        ); // 6 + 100 = 106
+        assert_eq!(
+            permuted_broadcast[&[1, 1, 1]],
+            base_tensor[&[1, 1, 1]] + 200
+        ); // 18 + 200 = 218
+
+        // Test broadcast_op with sliced tensors
+        let mut slice_base = Tensor::<i32>::zeros(vec![4, 5]);
+        for i in 0..4 {
+            for j in 0..5 {
+                slice_base[&[i, j]] = (i * 5 + j + 1) as i32;
+            }
+        }
+
+        // Slice to get middle portion: [2,3] from rows 1-2, cols 1-3
+        let sliced_tensor = slice_base.slice(0, 1..=2).slice(1, 1..=3);
+        assert_eq!(sliced_tensor.shape.shape, vec![2, 3]);
+
+        // Create another tensor to broadcast with
+        let mut slice_broadcast = Tensor::<i32>::zeros(vec![1, 3]);
+        slice_broadcast[&[0, 0]] = 1000;
+        slice_broadcast[&[0, 1]] = 2000;
+        slice_broadcast[&[0, 2]] = 3000;
+
+        // Broadcast sliced[2,3] with slice_broadcast[1,3]
+        let sliced_broadcast_result =
+            sliced_tensor.broadcast_op(&slice_broadcast, &[(0, 0), (1, 1)], |a, b| a + b);
+        assert_eq!(sliced_broadcast_result.shape.shape, vec![2, 3]); // LHS shape preserved
+
+        assert_eq!(sliced_broadcast_result[&[0, 0]], slice_base[&[1, 1]] + 1000);
+        assert_eq!(sliced_broadcast_result[&[0, 1]], slice_base[&[1, 2]] + 2000);
+        assert_eq!(sliced_broadcast_result[&[0, 2]], slice_base[&[1, 3]] + 3000);
+        assert_eq!(sliced_broadcast_result[&[1, 0]], slice_base[&[2, 1]] + 1000);
+        assert_eq!(sliced_broadcast_result[&[1, 1]], slice_base[&[2, 2]] + 2000);
+        assert_eq!(sliced_broadcast_result[&[1, 2]], slice_base[&[2, 3]] + 3000);
+
+        // Test broadcast_op with skipped (strided) tensors
+        let mut skip_base = Tensor::<i32>::zeros(vec![6, 8]);
+        for i in 0..6 {
+            for j in 0..8 {
+                skip_base[&[i, j]] = (i * 8 + j + 1) as i32;
+            }
+        }
+
+        // Skip every other element: [6,8] -> [3,4]
+        let skipped_tensor = skip_base.skip(0, 2).skip(1, 2);
+        assert_eq!(skipped_tensor.shape.shape, vec![3, 4]);
+
+        // Create a column vector to broadcast with
+        let mut skip_col = Tensor::<i32>::zeros(vec![3, 1]);
+        skip_col[&[0, 0]] = 10000;
+        skip_col[&[1, 0]] = 20000;
+        skip_col[&[2, 0]] = 30000;
+
+        // Broadcast skipped[3,4] with skip_col[3,1]
+        let skip_broadcast_result =
+            skipped_tensor.broadcast_op(&skip_col, &[(0, 0), (1, 1)], |a, b| a * b);
+        assert_eq!(skip_broadcast_result.shape.shape, vec![3, 4]); // LHS shape preserved
+
+        // Verify values: skipped accesses every other element, multiplied by column values
+        assert_eq!(skip_broadcast_result[&[0, 0]], skip_base[&[0, 0]] * 10000); // 1 * 10000 = 10000
+        assert_eq!(skip_broadcast_result[&[0, 1]], skip_base[&[0, 2]] * 10000); // 3 * 10000 = 30000
+        assert_eq!(skip_broadcast_result[&[1, 0]], skip_base[&[2, 0]] * 20000); // 17 * 20000 = 340000
+        assert_eq!(skip_broadcast_result[&[1, 3]], skip_base[&[2, 6]] * 20000); // 23 * 20000 = 460000
+        assert_eq!(skip_broadcast_result[&[2, 2]], skip_base[&[4, 4]] * 30000); // 37 * 30000 = 1110000
+
+        // Test complex case: permute + slice + broadcast
+        let mut complex_base = Tensor::<i32>::zeros(vec![3, 4, 5]);
+        let mut val = 1;
+        for i in 0..3 {
+            for j in 0..4 {
+                for k in 0..5 {
+                    complex_base[&[i, j, k]] = val;
+                    val += 1;
+                }
+            }
+        }
+
+        let complex_permuted = complex_base.permute(&[2, 0, 1]);
+        let complex_sliced = complex_permuted.slice(0, 1..=3);
+        assert_eq!(complex_sliced.shape.shape, vec![3, 3, 4]);
+
+        // Create a tensor to broadcast with the complex transformed tensor
+        let mut complex_broadcast_tensor = Tensor::<i32>::zeros(vec![3]);
+        complex_broadcast_tensor[&[0]] = 2;
+        complex_broadcast_tensor[&[1]] = 3;
+        complex_broadcast_tensor[&[2]] = 5;
+
+        // Broadcast: complex_sliced[3,3,4] with complex_broadcast_tensor[3,1]
+        // Match dimension 1 of LHS with dimension 0 of RHS
+        let complex_broadcast_result =
+            complex_sliced.broadcast_op(&complex_broadcast_tensor, &[(1, 0)], |a, b| a * b);
+        assert_eq!(complex_broadcast_result.shape.shape, vec![3, 3, 4]);
+
+        assert_eq!(
+            complex_broadcast_result[&[0, 0, 0]],
+            complex_base[&[0, 0, 1]] * complex_broadcast_tensor[&[0]]
+        );
+        assert_eq!(
+            complex_broadcast_result[&[1, 1, 2]],
+            complex_base[&[1, 2, 2]] * complex_broadcast_tensor[&[1]]
+        );
+        assert_eq!(
+            complex_broadcast_result[&[2, 2, 3]],
+            complex_base[&[2, 3, 3]] * complex_broadcast_tensor[&[2]]
+        );
+
+        // Test broadcasting between two non-standard layout tensors
+        let tensor_a_ns = base_tensor.permute(&[1, 2, 0]);
+        let tensor_a_sliced = tensor_a_ns.slice(1, 1..=2);
+
+        let tensor_b_ns = base_tensor.skip(0, 1).skip(2, 2);
+        let tensor_b_permuted = tensor_b_ns.permute(&[1, 0, 2]);
+
+        assert_eq!(tensor_a_sliced.shape.shape, vec![3, 2, 2]);
+        assert_eq!(tensor_b_permuted.shape.shape, vec![3, 2, 2]);
+
+        let ns_broadcast_result =
+            tensor_a_sliced
+                .broadcast_op(&tensor_b_permuted, &[(0, 0), (1, 1), (2, 2)], |a, b| a + b);
+        assert_eq!(ns_broadcast_result.shape.shape, vec![3, 2, 2]);
+
+        // Verify that both tensors are accessing their data correctly through their complex stride patterns
+        // This tests that the broadcast_op correctly handles both linear_offset and custom strides
+        let a_val_000 = tensor_a_sliced[&[0, 0, 0]];
+        let b_val_000 = tensor_b_permuted[&[0, 0, 0]];
+        assert_eq!(ns_broadcast_result[&[0, 0, 0]], a_val_000 + b_val_000);
+
+        let a_val_111 = tensor_a_sliced[&[1, 1, 1]];
+        let b_val_111 = tensor_b_permuted[&[1, 1, 1]];
+        assert_eq!(ns_broadcast_result[&[1, 1, 1]], a_val_111 + b_val_111);
     }
 
     #[test]
